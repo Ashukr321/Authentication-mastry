@@ -48,7 +48,7 @@ All example code is **Node.js with Express**. Don't use plain `http`, other fram
 - Copy the structure of a finished topic's `diagrams.html`: `../../resources/diagrams.css`, the Mermaid UMD build from jsDelivr (`mermaid@11.4.1/dist/mermaid.min.js`), then `../../resources/diagrams.js`.
 - At least a **flow diagram** (flowchart with `error` red / `ok` green / `trap` yellow classDefs) and a **data flow** (`sequenceDiagram` with real payloads, inside `class="layout wide"`). Each has a legend and a "How to read it" list.
 - Escape `<br/>` and `-->` as `&lt;br/&gt;` / `--&gt;` inside `<pre class="mermaid">`.
-- Mermaid gotchas: `"1. POST"` in a flowchart label renders as "Unsupported markdown: list" (write `"step 1: POST"`). A bare `https://…` renders as "Unsupported markdown: link" (drop the scheme). Two unconnected subgraphs stack badly: use two diagrams in `<div class="pair">`.
+- Mermaid gotchas: `"1. POST"` in a flowchart label renders as "Unsupported markdown: list" (write `"step 1: POST"`). A bare `https://…` renders as "Unsupported markdown: link" (drop the scheme). Two unconnected subgraphs stack badly: use two diagrams in `<div class="pair">`. In a `sequenceDiagram`, `;` ends the statement, so a message like `Set-Cookie: sid=x; HttpOnly` is a syntax error (write `sid=x (HttpOnly, SameSite=Lax)`).
 - Render-check it in the browser and search the page text for "Unsupported markdown" and "Syntax error".
 
 ## 4. Website

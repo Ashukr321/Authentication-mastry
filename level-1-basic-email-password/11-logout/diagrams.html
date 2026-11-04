@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>11. Logout: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 1 · TOPIC 11</div>
+    <h1>Logout: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">logout notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#compare">3. Cookie only vs real logout</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server does when the user clicks "Log out": <code>POST /logout</code></p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Refused: nothing changes</span>
+        <span class="chip"><i class="trap"></i>Session deleted: every copy of the ID is dead</span>
+        <span class="chip"><i class="db"></i>Session store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["User clicks Log out&lt;br/&gt;Cookie: sid=6ae3…"]) --&gt; M{"Is it a POST?"}
+    M -- "No: GET /logout" --&gt; E1[/"405 Method Not Allowed&lt;br/&gt;Allow: POST"/]
+    M -- Yes --&gt; O{"Origin header is&lt;br/&gt;another site?"}
+    O -- "Yes: evil.com" --&gt; E2[/"403 Forbidden&lt;br/&gt;Request from another site was blocked"/]
+    O -- "No (or no Origin)" --&gt; C["key = sha256(cookie sid)"]
+    C --&gt; D[("Look up the key&lt;br/&gt;in the session store")]
+    D --&gt; F{"Session found?"}
+    F -- Yes --&gt; X["Delete the session&lt;br/&gt;on the server"]
+    F -- "No: expired or&lt;br/&gt;already logged out" --&gt; K
+    X --&gt; K["Clear the cookie&lt;br/&gt;same name + path + domain&lt;br/&gt;Expires=1970"]
+    K --&gt; S["Clear-Site-Data:&lt;br/&gt;cookies, storage"]
+    S --&gt; OK[/"200 OK&lt;br/&gt;Logged out"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2 error
+    class OK ok
+    class X trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: the browser sends the logout request with its session cookie.</li>
+          <li><b>Diamonds</b> are questions the server asks. Follow the arrows.</li>
+          <li>The two <b>red</b> boxes stop other sites from logging your users out: <code>GET</code> is refused, and so is a POST from another site's page.</li>
+          <li>The <b>yellow</b> box is the real logout: once the session is deleted, a stolen copy of the ID stops working.</li>
+          <li>"Session found? No" still ends in <b>200</b>: logging out twice is not an error.</li>
+        </ol>
+        <p class="tip">The cookie is cleared with the <b>same options</b> it was set with. A different <code>Path</code> would leave the real cookie behind.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul is logged in on a laptop and a phone. Priya copied the laptop's cookie. Watch what each logout does.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant L as Rahul's laptop
+    participant P as Rahul's phone
+    actor A as Priya (stolen cookie)
+    participant S as Server
+    participant DB as Session store
+
+    L-&gt;&gt;S: POST /login { email, password }
+    S-&gt;&gt;DB: INSERT sha256("6ae3…") → { userId: "u_1", device: "Laptop" }
+    S--&gt;&gt;L: 200 + Set-Cookie: sid=6ae3… (HttpOnly, SameSite=Lax)
+    P-&gt;&gt;S: POST /login { email, password }
+    S-&gt;&gt;DB: INSERT sha256("b71c…") → { userId: "u_1", device: "Phone" }
+    S--&gt;&gt;P: 200 + Set-Cookie: sid=b71c…
+    Note over A: Priya copies sid=6ae3… from the laptop
+    L-&gt;&gt;S: POST /logout (Cookie: sid=6ae3…)
+    S-&gt;&gt;DB: DELETE sha256("6ae3…")
+    S--&gt;&gt;L: 200 + Set-Cookie: sid= (Expires=1970) + Clear-Site-Data
+    A-&gt;&gt;S: GET /me (Cookie: sid=6ae3…)
+    S--&gt;&gt;A: 401 Not logged in ✓ (the server forgot it)
+    P-&gt;&gt;S: GET /me (Cookie: sid=b71c…)
+    S--&gt;&gt;P: 200 still logged in (logout ends one device)
+    P-&gt;&gt;S: POST /logout-all
+    S-&gt;&gt;DB: DELETE every session WHERE userId = "u_1"
+    S--&gt;&gt;P: 200 "Logged out of N device(s)"
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–6: each device gets its <b>own</b> session. The store keeps only the <b>hash</b> of each ID.</li>
+          <li>Step 9: the laptop's session is deleted <b>on the server</b>. That's what kills Priya's copy in steps 11–12.</li>
+          <li>Steps 13–14: the phone is untouched. A normal logout ends only <b>this</b> device.</li>
+          <li>Steps 15–17: "log out everywhere" deletes every session of the user.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="compare">
+      <h2>3. Cookie only vs real logout</h2>
+      <p class="lead">The same stolen cookie, two different logouts. Only one of them actually locks Priya out.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Attacker locked out</span>
+        <span class="chip"><i class="error"></i>Attacker still inside</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["❌ Logout that only&lt;br/&gt;deletes the cookie"]) --&gt; B1["Browser forgets sid=6ae3…"]
+    B1 --&gt; C1["Server still has&lt;br/&gt;sha256(6ae3…) → u_1"]
+    C1 --&gt; D1["Priya sends sid=6ae3…"]
+    D1 --&gt; E1[/"200 OK&lt;br/&gt;Priya is still logged in 😱"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class E1 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["✅ Real logout"]) --&gt; B2["Server DELETES&lt;br/&gt;sha256(6ae3…)"]
+    B2 --&gt; C2["Browser forgets sid=6ae3…"]
+    C2 --&gt; D2["Priya sends sid=6ae3…"]
+    D2 --&gt; E2[/"401 Not logged in&lt;br/&gt;the ID means nothing now ✓"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class E2 ok
+</pre></div>
+      </div>
+      <p class="tip">Deleting the cookie only cleans <b>this</b> browser. Deleting the session on the server cleans <b>every</b> copy, wherever it is.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
