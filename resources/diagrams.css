@@ -21,6 +21,24 @@
     --code-bg: #1c2445;
   }
 }
+/* Forced dark (the website passes ?theme=dark), same colors as above */
+:root[data-theme="dark"] {
+  --bg: #0b1020;
+  --card: #131a33;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --border: #253055;
+  --accent: #a78bfa;
+  --accent-soft: #2a2350;
+  --code-bg: #1c2445;
+}
+
+/* Embedded in the website: no page header/nav/footer, no outer padding */
+.embedded header,
+.embedded nav,
+.embedded footer { display: none; }
+.embedded main { padding: 0; }
+.embedded section { margin-bottom: 16px; }
 
 * { box-sizing: border-box; }
 body {

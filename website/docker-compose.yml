@@ -1,0 +1,22 @@
+# Run the site in production mode:   docker compose up --build -d
+# Then open http://localhost:3000     (stop with: docker compose down)
+services:
+  website:
+    build:
+      # Repo root, because the notes live next to website/, not inside it
+      context: ..
+      dockerfile: website/Dockerfile
+      args:
+        NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+        NEXT_PUBLIC_REPO_URL: ${NEXT_PUBLIC_REPO_URL:-https://github.com/Ashukr321/Authentication-mastry}
+    image: auth-mastery-website:latest
+    container_name: auth-mastery-website
+    ports:
+      - "${PORT:-3000}:3000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/website/.next/cache
+    security_opt:
+      - no-new-privileges:true

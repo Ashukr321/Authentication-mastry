@@ -1,0 +1,280 @@
+@import "tailwindcss";
+
+/* ---------- Theme tokens (light by default, dark via html[data-theme="dark"]) ---------- */
+:root {
+    --bg: #ffffff;
+    --surface: #f8fafc;
+    --sidebar: #f8fafc;
+    --header: #ffffff;
+    --fg: #0f172a;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --hover: #eef2f7;
+    --accent: #7c3aed;
+    --accent-fg: #ffffff;
+    --accent-soft: #f3efff;
+    --code-bg: #f1f5f9;
+    color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+    --bg: #16171d;
+    --surface: #1d1e25;
+    --sidebar: #1b1c22;
+    --header: #1b1c22;
+    --fg: #e6e7eb;
+    --muted: #9ca0ab;
+    --border: #2d2f3a;
+    --hover: #262833;
+    --accent: #a5a1ff;
+    --accent-fg: #16171d;
+    --accent-soft: #2a2747;
+    --code-bg: #22232b;
+    color-scheme: dark;
+}
+
+@theme inline {
+    --color-bg: var(--bg);
+    --color-surface: var(--surface);
+    --color-sidebar: var(--sidebar);
+    --color-header: var(--header);
+    --color-fg: var(--fg);
+    --color-muted: var(--muted);
+    --color-border: var(--border);
+    --color-hover: var(--hover);
+    --color-accent: var(--accent);
+    --color-accent-fg: var(--accent-fg);
+    --color-accent-soft: var(--accent-soft);
+    --font-sans: var(--font-geist-sans);
+    --font-mono: var(--font-geist-mono);
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+a {
+    text-decoration: none;
+}
+
+/* Small pill links at the top of a topic page */
+.chip {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 4px 12px;
+    color: var(--fg);
+    background: var(--surface);
+}
+.chip:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* ---------- Notes rendered from the READMEs ---------- */
+.prose {
+    font-size: 17px;
+    line-height: 1.75;
+    color: var(--fg);
+}
+.prose > * > *:first-child {
+    margin-top: 0;
+}
+.prose h2,
+.prose h3,
+.prose h4 {
+    position: relative;
+    scroll-margin-top: 88px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+}
+.prose h2 {
+    margin: 3.5rem 0 1rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--border);
+    font-size: 1.9rem;
+}
+.prose h3 {
+    margin: 2.5rem 0 0.75rem;
+    font-size: 1.4rem;
+}
+.prose h4 {
+    margin: 2rem 0 0.5rem;
+    font-size: 1.15rem;
+}
+.prose .anchor {
+    margin-left: 0.4em;
+    color: var(--muted);
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.prose :is(h2, h3, h4):hover .anchor,
+.prose .anchor:focus {
+    opacity: 1;
+}
+.prose p,
+.prose ul,
+.prose ol,
+.prose pre,
+.prose table,
+.prose blockquote {
+    margin: 1rem 0;
+}
+.prose ul {
+    list-style: disc;
+    padding-left: 1.5rem;
+}
+.prose ol {
+    list-style: decimal;
+    padding-left: 1.5rem;
+}
+.prose li {
+    margin: 0.35rem 0;
+}
+.prose li > ul,
+.prose li > ol {
+    margin: 0.35rem 0;
+}
+.prose a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-thickness: 1px;
+}
+.prose a.anchor {
+    text-decoration: none;
+}
+.prose strong {
+    font-weight: 700;
+}
+.prose hr {
+    margin: 2.5rem 0;
+    border-color: var(--border);
+}
+.prose img {
+    max-width: 100%;
+    border-radius: 12px;
+}
+.prose :not(pre) > code {
+    padding: 0.15em 0.4em;
+    border-radius: 6px;
+    background: var(--code-bg);
+    font-family: var(--font-geist-mono), ui-monospace, monospace;
+    font-size: 0.86em;
+}
+/* Long paths and URLs wrap instead of making the page scroll sideways on phones */
+.prose :not(pre) > code,
+.prose a {
+    overflow-wrap: anywhere;
+}
+
+@media (max-width: 639px) {
+    .prose {
+        font-size: 16px;
+    }
+    .prose h2 {
+        margin-top: 2.5rem;
+        font-size: 1.55rem;
+    }
+    .prose h3 {
+        font-size: 1.25rem;
+    }
+    .prose pre.shiki {
+        padding: 0.85rem 1rem;
+        font-size: 13px;
+    }
+    .prose h3.code-file-header {
+        flex-wrap: wrap;
+        gap: 0.25rem 1rem;
+    }
+}
+.prose blockquote {
+    padding: 0.75rem 1.25rem;
+    border-left: 4px solid var(--accent);
+    border-radius: 0 10px 10px 0;
+    background: var(--accent-soft);
+}
+.prose blockquote p {
+    margin: 0.4rem 0;
+}
+
+/* Tables scroll sideways on small screens instead of breaking the layout */
+.prose table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: 15px;
+    line-height: 1.55;
+}
+.prose th,
+.prose td {
+    padding: 0.6rem 0.8rem;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+}
+.prose th {
+    background: var(--surface);
+    font-weight: 600;
+}
+
+/* ---------- Code blocks (shiki, light + dark colors in CSS variables) ---------- */
+.prose pre.shiki {
+    overflow-x: auto;
+    padding: 1rem 1.25rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    font-family: var(--font-geist-mono), ui-monospace, monospace;
+    font-size: 14px;
+    line-height: 1.65;
+    background-color: var(--shiki-light-bg);
+}
+.prose pre.shiki span {
+    color: var(--shiki-light);
+}
+[data-theme="dark"] .prose pre.shiki {
+    background-color: var(--shiki-dark-bg);
+}
+[data-theme="dark"] .prose pre.shiki span {
+    color: var(--shiki-dark);
+}
+
+/* A full source file under "Source code" */
+.prose .code-file {
+    margin: 1.5rem 0;
+}
+.prose h3.code-file-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin: 0;
+    padding: 0.6rem 1rem;
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-radius: 12px 12px 0 0;
+    background: var(--surface);
+    font-family: var(--font-geist-mono), ui-monospace, monospace;
+    font-size: 14px;
+}
+.prose h3.code-file-header a {
+    font-family: var(--font-geist-sans), system-ui, sans-serif;
+    font-weight: 500;
+}
+.prose .code-file pre.shiki {
+    margin-top: 0;
+    border-radius: 0 0 12px 12px;
+    max-height: 640px;
+}
