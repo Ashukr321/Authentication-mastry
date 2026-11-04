@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>08. HTTP Basic Auth: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 1 · TOPIC 08</div>
+    <h1>HTTP Basic Auth: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">HTTP Basic Auth notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server checks on <b>every</b> request to a protected page. With Basic Auth, there is no "already logged in": the full check runs every time.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: 401 + WWW-Authenticate</span>
+        <span class="chip"><i class="trap"></i>Timing-attack fix (dummy hash)</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A([Request to /admin]) --&gt; B{"Has an Authorization header&lt;br/&gt;starting with Basic?"}
+    B -- No --&gt; E1[/"401 Unauthorized&lt;br/&gt;WWW-Authenticate: Basic realm=Admin area"/]
+    B -- Yes --&gt; C["Base64-decode the value&lt;br/&gt;cmFodWw6... → rahul:correct horse battery"]
+    C --&gt; D{"Does it contain&lt;br/&gt;a colon?"}
+    D -- No --&gt; E1
+    D -- Yes --&gt; F["Split at the FIRST colon&lt;br/&gt;username = rahul&lt;br/&gt;password = correct horse battery"]
+    F --&gt; G{"Username&lt;br/&gt;found?"}
+    G -- Yes --&gt; H["Verify password against&lt;br/&gt;the user's stored hash"]
+    G -- No --&gt; H2["Verify against a DUMMY hash&lt;br/&gt;(takes the same time, always fails)"]
+    H --&gt; I{"Password&lt;br/&gt;matches?"}
+    I -- No --&gt; E2[/"401 Unauthorized&lt;br/&gt;Invalid username or password&lt;br/&gt;+ WWW-Authenticate"/]
+    H2 --&gt; E2
+    I -- Yes --&gt; OK[/"200 OK&lt;br/&gt;Welcome to the admin area, rahul!"/]
+    OK -.-&gt;|"next request: check everything again"| A
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2 error
+    class OK ok
+    class H2 trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: a request arrives for <code>/admin</code>.</li>
+          <li><b>Diamonds</b> are questions the server asks. Follow <b>Yes</b> or <b>No</b>.</li>
+          <li><b>Red</b> boxes send <code>401</code> <b>with</b> <code>WWW-Authenticate</code>, which makes the browser show its login popup.</li>
+          <li>The <b>yellow</b> box hides which usernames exist (same as login in topic 07).</li>
+          <li>The <b>dashed arrow</b> back to the top: the next request goes through <b>all</b> of this again.</li>
+        </ol>
+        <p class="tip">Split at the <b>first</b> colon: usernames can't contain <code>:</code>, but passwords can, like <code>priya:pass:with:colons</code>.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">What travels between the user, browser, server and users store, from the first 401 challenge to the browser resending the password on every later request.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant B as Browser
+    participant S as Server
+    participant DB as Users store
+
+    U-&gt;&gt;B: Opens https://site.com/admin
+    B-&gt;&gt;S: GET /admin (no Authorization header)
+    S--&gt;&gt;B: 401 Unauthorized&lt;br/&gt;WWW-Authenticate: Basic realm="Admin area"
+    Note over B: Browser shows its built-in login popup
+    U-&gt;&gt;B: Types rahul / correct horse battery
+    Note over B: Joins "rahul:correct horse battery"&lt;br/&gt;then Base64 → cmFodWw6Y29ycmVjdC...
+    B-&gt;&gt;S: GET /admin&lt;br/&gt;Authorization: Basic cmFodWw6Y29ycmVjdC...
+    Note over S: Decode, then split at the first colon&lt;br/&gt;username "rahul", password "correct horse battery"
+    S-&gt;&gt;DB: Get the password hash for "rahul"
+    DB--&gt;&gt;S: "a1b2…:9f8e…"
+    Note over S: Hash the typed password and compare safely (~300 ms)
+    S--&gt;&gt;B: 200 OK "Welcome to the admin area, rahul!"
+    U-&gt;&gt;B: Clicks another admin page
+    B-&gt;&gt;S: GET /admin/reports&lt;br/&gt;Authorization: Basic cmFodWw6Y29ycmVjdC... (sent again, automatically)
+    Note over S: Decode + hash + compare AGAIN&lt;br/&gt;(every request costs ~300 ms)
+    S--&gt;&gt;B: 200 OK
+    Note over U,S: No session exists. The browser keeps sending the password&lt;br/&gt;until it is closed, so there is no real logout.
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system.</li>
+          <li><b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>The <b>numbers</b> show the order things happen.</li>
+          <li><b>Yellow notes</b> are what the browser or server does on its own.</li>
+          <li>Look for <b>Authorization: Basic</b>: it appears on <b>every</b> request after the popup.</li>
+        </ol>
+      </aside>
+      </div>
+      <p class="tip"><code>cmFodWw6Y29ycmVjdCBob3JzZSBiYXR0ZXJ5</code> is only Base64. Anyone can decode it back to <code>rahul:correct horse battery</code>, so Basic Auth is only safe over <b>HTTPS</b>.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
