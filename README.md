@@ -1,5 +1,7 @@
 # Authentication Mastery
 
+![Authentication Mastery: backend auth, level by level, from passwords to enterprise SSO](resources/banner.svg)
+
 A level-by-level path through backend authentication and authorization, from the basics to enterprise SSO.
 Each topic folder has a `README.md` with notes (concepts, common mistakes, interview questions) and, where useful, a small runnable Node.js example with tests.
 
