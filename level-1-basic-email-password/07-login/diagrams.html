@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>07. Login: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 1 · TOPIC 07</div>
+    <h1>Login: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">login notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every decision the server makes, from the moment the request arrives until it sends a response.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="trap"></i>Timing-attack fix (dummy hash)</span>
+        <span class="chip"><i class="db"></i>Session store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A([User submits the login form]) --&gt; B["POST /login&lt;br/&gt;{ email, password }"]
+    B --&gt; C{"email and password are&lt;br/&gt;non-empty strings?"}
+    C -- No --&gt; E1[/"400 Bad Request&lt;br/&gt;Email and password are required"/]
+    C -- Yes --&gt; D["Normalize email&lt;br/&gt;trim + lowercase"]
+    D --&gt; F{"User found&lt;br/&gt;by email?"}
+    F -- Yes --&gt; G["Verify password against&lt;br/&gt;the user's stored hash"]
+    F -- No --&gt; G2["Verify password against a DUMMY hash&lt;br/&gt;(takes the same time, always fails)"]
+    G --&gt; M{"Password&lt;br/&gt;matches?"}
+    M -- No --&gt; E2[/"401 Unauthorized&lt;br/&gt;Invalid email or password"/]
+    G2 --&gt; E2
+    M -- Yes --&gt; N["Create a NEW random session ID&lt;br/&gt;crypto.randomBytes(32)"]
+    N --&gt; O[("Save session&lt;br/&gt;sessionId → userId")]
+    O --&gt; P[/"200 OK&lt;br/&gt;Set-Cookie: sessionId (HttpOnly)&lt;br/&gt;{ id, email }"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2 error
+    class P ok
+    class G2 trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: the user submits the form.</li>
+          <li><b>Diamonds</b> are questions the server asks. Follow <b>Yes</b> or <b>No</b>.</li>
+          <li><b>Both</b> "user not found" and "wrong password" end in the <b>same</b> red box, with the same message, so attackers learn nothing.</li>
+          <li>The <b>yellow</b> box runs a dummy hash so "user not found" takes as long as "wrong password".</li>
+          <li><b>Green</b> box: logged in, and the browser gets a session cookie.</li>
+        </ol>
+        <p class="tip">Without the yellow box, an attacker could tell which emails exist just by timing the response.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The same login, shown as messages between the user, browser, server, users database and session store, including the next request that uses the session cookie.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant B as Browser
+    participant S as Server
+    participant DB as Users database
+    participant SS as Session store
+
+    U-&gt;&gt;B: Types email + password
+    B-&gt;&gt;S: POST /login over HTTPS&lt;br/&gt;{ "email": "Rahul@Mail.com", "password": "correct horse battery" }
+    Note over S: Normalize email → "rahul@mail.com"
+    S-&gt;&gt;DB: Find user where email = "rahul@mail.com"
+    DB--&gt;&gt;S: { id: "u_1", passwordHash: "a1b2…:9f8e…" } or nothing
+    Note over S: Hash the typed password with the stored salt&lt;br/&gt;(or a dummy hash if no user) and compare safely
+    alt Password is correct
+        S-&gt;&gt;SS: Save "k9X2…" → "u_1"
+        S--&gt;&gt;B: 200 OK + Set-Cookie: sessionId=k9X2… (HttpOnly)
+        Note over B: Browser stores the cookie.&lt;br/&gt;JavaScript can't read it (HttpOnly).
+        B--&gt;&gt;U: "Welcome back!"
+        U-&gt;&gt;B: Opens the profile page
+        B-&gt;&gt;S: GET /me + Cookie: sessionId=k9X2… (sent automatically)
+        S-&gt;&gt;SS: Who is "k9X2…"?
+        SS--&gt;&gt;S: "u_1"
+        S--&gt;&gt;B: 200 OK { "id": "u_1", "email": "rahul@mail.com" }
+    else Wrong email or wrong password
+        S--&gt;&gt;B: 401 { "error": "Invalid email or password" }
+        B--&gt;&gt;U: "Invalid email or password"
+    end
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system.</li>
+          <li><b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>The <b>numbers</b> show the order things happen.</li>
+          <li><b>Yellow notes</b> are what the server does on its own.</li>
+          <li>The <b>alt</b> box shows the two possible endings.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

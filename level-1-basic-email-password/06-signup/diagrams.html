@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>06. Signup: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 1 · TOPIC 06</div>
+    <h1>Signup: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">signup notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every decision the server makes, from the moment the request arrives until it sends a response.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="db"></i>Database</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A([User submits the signup form]) --&gt; B["POST /signup&lt;br/&gt;{ email, password }"]
+    B --&gt; C{"Body is valid JSON&lt;br/&gt;and under 10 KB?"}
+    C -- No --&gt; E1[/"400 Bad Request&lt;br/&gt;or 413 Payload Too Large"/]
+    C -- Yes --&gt; D["Pick ONLY email + password&lt;br/&gt;(ignore extra fields like role)"]
+    D --&gt; F{"Email and password&lt;br/&gt;pass validation?"}
+    F -- No --&gt; E2[/"400 Bad Request&lt;br/&gt;{ errors: [...] }"/]
+    F -- Yes --&gt; G["Normalize email&lt;br/&gt;trim + lowercase"]
+    G --&gt; H["Hash password&lt;br/&gt;random salt + scrypt / argon2"]
+    H --&gt; I{"Email already&lt;br/&gt;in the database?"}
+    I -- Yes --&gt; E3[/"409 Conflict&lt;br/&gt;Email already registered"/]
+    I -- No --&gt; J[("Save user&lt;br/&gt;id, email, passwordHash, role")]
+    J --&gt; K[/"201 Created&lt;br/&gt;{ id, email }"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class E1,E2,E3 error
+    class K ok
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: the user submits the form.</li>
+          <li><b>Diamonds</b> are questions the server asks. Follow <b>Yes</b> or <b>No</b>.</li>
+          <li><b>Red</b> boxes: the server stops and sends an error.</li>
+          <li><b>Green</b> box: account created.</li>
+          <li>The password is <b>hashed before saving</b>, so the plain password never reaches the database.</li>
+        </ol>
+        <p class="tip">Every red box is a check the <b>server</b> must do itself. Never trust the frontend.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The same signup, shown as messages between the user, browser, server, hasher and database, with the real data inside each message.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant B as Browser
+    participant S as Server
+    participant H as Hasher (scrypt / argon2)
+    participant DB as Database
+
+    U-&gt;&gt;B: Types email + password
+    B-&gt;&gt;S: POST /signup over HTTPS&lt;br/&gt;{ "email": " Rahul@Mail.com ", "password": "correct horse battery" }
+    Note over S: Validate input&lt;br/&gt;Normalize email → "rahul@mail.com"
+    S-&gt;&gt;H: plain password + new random salt
+    H--&gt;&gt;S: passwordHash "a1b2…:9f8e…"
+    Note over S,H: The plain password is thrown away now.&lt;br/&gt;It is never stored or logged.
+    S-&gt;&gt;DB: INSERT { id, email: "rahul@mail.com", passwordHash, role: "user" }
+    alt Email is new
+        DB--&gt;&gt;S: Row saved
+        S--&gt;&gt;B: 201 Created { "id": "u_1", "email": "rahul@mail.com" }
+        B--&gt;&gt;U: "Account created!"
+    else Email already exists (UNIQUE index)
+        DB--&gt;&gt;S: Duplicate key error
+        S--&gt;&gt;B: 409 Conflict { "error": "Email already registered" }
+        B--&gt;&gt;U: "Email already registered"
+    end
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system.</li>
+          <li><b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>The <b>numbers</b> show the order things happen.</li>
+          <li><b>Yellow notes</b> are what the server does on its own.</li>
+          <li>The <b>alt</b> box shows the two possible endings.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

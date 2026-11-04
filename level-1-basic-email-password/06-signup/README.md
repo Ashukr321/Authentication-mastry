@@ -35,57 +35,14 @@ When you open a bank account:
 
 ### The signup flow, step by step
 
-#### Flow diagram: every decision the server makes
+#### 📊 Diagrams
 
-```mermaid
-flowchart TD
-    A([User submits the signup form]) --> B["POST /signup<br/>{ email, password }"]
-    B --> C{"Body is valid JSON<br/>and under 10 KB?"}
-    C -- No --> E1[/"400 Bad Request<br/>or 413 Payload Too Large"/]
-    C -- Yes --> D["Pick ONLY email + password<br/>(ignore extra fields like role)"]
-    D --> F{"Email and password<br/>pass validation?"}
-    F -- No --> E2[/"400 Bad Request<br/>{ errors: [...] }"/]
-    F -- Yes --> G["Normalize email<br/>trim + lowercase"]
-    G --> H["Hash password<br/>random salt + scrypt / argon2"]
-    H --> I{"Email already<br/>in the database?"}
-    I -- Yes --> E3[/"409 Conflict<br/>Email already registered"/]
-    I -- No --> J[("Save user<br/>id, email, passwordHash, role")]
-    J --> K[/"201 Created<br/>{ id, email }"/]
+Open **[diagrams.html](diagrams.html)** in your browser (just double-click the file) to see:
 
-    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
-    class E1,E2,E3 error
-    class K ok
-```
+- **Flow diagram**: every check the server does, and the status code each one returns (`400`, `413`, `409`, `201`)
+- **Data flow**: who sends what to whom (User → Browser → Server → Hasher → Database)
 
-#### Data flow: who sends what to whom
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor U as User
-    participant B as Browser
-    participant S as Server
-    participant H as Hasher (scrypt / argon2)
-    participant DB as Database
-
-    U->>B: Types email + password
-    B->>S: POST /signup over HTTPS<br/>{ "email": " Rahul@Mail.com ", "password": "correct horse battery" }
-    Note over S: Validate input<br/>Normalize email → "rahul@mail.com"
-    S->>H: plain password + new random salt
-    H-->>S: passwordHash "a1b2…:9f8e…"
-    Note over S,H: The plain password is thrown away now.<br/>It is never stored or logged.
-    S->>DB: INSERT { id, email: "rahul@mail.com", passwordHash, role: "user" }
-    alt Email is new
-        DB-->>S: Row saved
-        S-->>B: 201 Created { "id": "u_1", "email": "rahul@mail.com" }
-        B-->>U: "Account created!"
-    else Email already exists (UNIQUE index)
-        DB-->>S: Duplicate key error
-        S-->>B: 409 Conflict { "error": "Email already registered" }
-        B-->>U: "Email already registered"
-    end
-```
+In short: `validate → normalize → hash → save (unique email) → 201 Created`
 
 #### Where does the password live? 🔍
 

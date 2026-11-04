@@ -29,66 +29,14 @@ Remember from topic 02: **HTTP is stateless**. The server forgets you after ever
 
 ### The login flow, step by step
 
-#### Flow diagram: every decision the server makes
+#### 📊 Diagrams
 
-```mermaid
-flowchart TD
-    A([User submits the login form]) --> B["POST /login<br/>{ email, password }"]
-    B --> C{"email and password are<br/>non-empty strings?"}
-    C -- No --> E1[/"400 Bad Request<br/>Email and password are required"/]
-    C -- Yes --> D["Normalize email<br/>trim + lowercase"]
-    D --> F{"User found<br/>by email?"}
-    F -- Yes --> G["Verify password against<br/>the user's stored hash"]
-    F -- No --> G2["Verify password against a DUMMY hash<br/>(takes the same time, always fails)"]
-    G --> M{"Password<br/>matches?"}
-    M -- No --> E2[/"401 Unauthorized<br/>Invalid email or password"/]
-    G2 --> E2
-    M -- Yes --> N["Create a NEW random session ID<br/>crypto.randomBytes(32)"]
-    N --> O[("Save session<br/>sessionId → userId")]
-    O --> P[/"200 OK<br/>Set-Cookie: sessionId (HttpOnly)<br/>{ id, email }"/]
+Open **[diagrams.html](diagrams.html)** in your browser (just double-click the file) to see:
 
-    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
-    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
-    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
-    class E1,E2 error
-    class P ok
-    class G2 trap
-```
+- **Flow diagram**: every check the server does, including the dummy-hash timing-attack fix
+- **Data flow**: who sends what to whom, from the login request to the session cookie and the next `GET /me` request
 
-> 🟡 The yellow box is the **timing-attack fix** (Trap 2 below). Without it, "user not found" would answer much faster than "wrong password".
-
-#### Data flow: who sends what to whom
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor U as User
-    participant B as Browser
-    participant S as Server
-    participant DB as Users database
-    participant SS as Session store
-
-    U->>B: Types email + password
-    B->>S: POST /login over HTTPS<br/>{ "email": "Rahul@Mail.com", "password": "correct horse battery" }
-    Note over S: Normalize email → "rahul@mail.com"
-    S->>DB: Find user where email = "rahul@mail.com"
-    DB-->>S: { id: "u_1", passwordHash: "a1b2…:9f8e…" } or nothing
-    Note over S: Hash the typed password with the stored salt<br/>(or a dummy hash if no user) and compare safely
-    alt Password is correct
-        S->>SS: Save "k9X2…" → "u_1"
-        S-->>B: 200 OK + Set-Cookie: sessionId=k9X2… (HttpOnly)
-        Note over B: Browser stores the cookie.<br/>JavaScript can't read it (HttpOnly).
-        B-->>U: "Welcome back!"
-        U->>B: Opens the profile page
-        B->>S: GET /me + Cookie: sessionId=k9X2… (sent automatically)
-        S->>SS: Who is "k9X2…"?
-        SS-->>S: "u_1"
-        S-->>B: 200 OK { "id": "u_1", "email": "rahul@mail.com" }
-    else Wrong email or wrong password
-        S-->>B: 401 { "error": "Invalid email or password" }
-        B-->>U: "Invalid email or password"
-    end
-```
+In short: `validate → normalize → find user → verify hash (dummy if no user) → new session → 200 OK`
 
 #### Where does each piece of data live? 🔍
 
