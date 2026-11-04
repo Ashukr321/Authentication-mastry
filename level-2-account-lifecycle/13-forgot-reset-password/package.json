@@ -1,0 +1,10 @@
+{
+  "name": "13-forgot-reset-password",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

@@ -88,7 +88,7 @@ export default function SiteShell({
             <div className="mx-auto flex max-w-[1600px]">
                 <aside
                     id="sidebar"
-                    className={`${menuOpen ? "block" : "hidden"} fixed top-16 bottom-0 left-0 z-20 w-80 max-w-[85vw] overflow-y-auto border-r border-border bg-sidebar lg:sticky lg:block lg:h-[calc(100vh-4rem)] lg:w-72 lg:max-w-none lg:shrink-0`}
+                    className={`${menuOpen ? "block" : "hidden"} fixed top-16 bottom-0 left-0 z-20 w-80 max-w-[85vw] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-r border-border bg-sidebar lg:sticky lg:block lg:h-[calc(100vh-4rem)] lg:w-72 lg:max-w-none lg:shrink-0`}
                 >
                     {/* On phones the search box lives in the menu */}
                     <div className="px-4 pt-4 sm:hidden">

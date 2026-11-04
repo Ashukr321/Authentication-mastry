@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>13. Forgot / Reset Password: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 2 · TOPIC 13</div>
+    <h1>Forgot / Reset Password: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">forgot / reset password notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#forgot">3. Forgot request</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server checks when the new password is submitted: <code>POST /reset-password { token, newPassword }</code></p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="trap"></i>Token deleted / devices logged out: can't be undone</span>
+        <span class="chip"><i class="db"></i>Token store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["User presses Save on the form&lt;br/&gt;POST /reset-password { token, newPassword }"]) --&gt; B{"Token has&lt;br/&gt;64 hex characters?"}
+    B -- No --&gt; E1[/"400 Bad Request&lt;br/&gt;This link is invalid or has expired"/]
+    B -- Yes --&gt; P{"New password&lt;br/&gt;8-128 characters?"}
+    P -- No --&gt; E2[/"400 Bad Request&lt;br/&gt;The new password must be 8-128 characters&lt;br/&gt;(token NOT used, try again)"/]
+    P -- Yes --&gt; C["key = sha256(token)"]
+    C --&gt; D[("Look up the key&lt;br/&gt;in the token store")]
+    D --&gt; F{"Found?"}
+    F -- "No: never existed,&lt;br/&gt;or already used" --&gt; E1
+    F -- Yes --&gt; X["Delete the token NOW&lt;br/&gt;(single use)"]
+    X --&gt; G{"Expired?&lt;br/&gt;older than 15 min"}
+    G -- Yes --&gt; E1
+    G -- No --&gt; H["passwordHash = scrypt(newPassword)&lt;br/&gt;passwordChangedAt = now"]
+    H --&gt; L["Delete ALL reset tokens&lt;br/&gt;and ALL sessions of this user"]
+    L --&gt; N["Email: Your password was changed"]
+    N --&gt; OK[/"200 OK&lt;br/&gt;Password changed. Please log in."/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2 error
+    class OK ok
+    class X,L trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: the user has opened the link and typed a new password.</li>
+          <li><b>Diamonds</b> are questions the server asks. Follow <b>Yes</b> or <b>No</b>.</li>
+          <li>The password is checked <b>before</b> the token is used, so a too-short password doesn't waste the link.</li>
+          <li>The first <b>yellow</b> box: the token is deleted <b>before</b> the expiry check, so it can never be used twice.</li>
+          <li>The second <b>yellow</b> box: every device is logged out. If an attacker was inside, they're kicked out now.</li>
+          <li>Every bad link ends in the <b>same red box</b>: "fake", "used" and "expired" look identical.</li>
+        </ol>
+        <p class="tip">Opening the link (<code>GET</code>) only shows the form. Email scanners open links on their own, so only the <b>POST</b> uses the token.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The whole journey: Rahul asks for a link, sets a new password, and the attacker's laptop gets logged out.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Rahul
+    participant B as Browser
+    participant S as Server
+    participant DB as Database
+    participant M as Email inbox
+    actor A as Priya's laptop (attacker)
+
+    Note over A,S: Priya stole the old password and is logged in (session sid=7c1e…)
+    U-&gt;&gt;B: Clicks "Forgot password?"
+    B-&gt;&gt;S: POST /forgot-password { email: "rahul@mail.com" }
+    Note over S: token = randomBytes(32) → "8b6d…e1a7"
+    S-&gt;&gt;DB: INSERT reset token { sha256("8b6d…"), userId: "u_1", expiresAt: +15 min }
+    S-&gt;&gt;M: "Reset your password" + myapp.com/reset-password?token=8b6d…e1a7
+    S--&gt;&gt;B: 202 "If an account exists, we've sent a reset link"
+    U-&gt;&gt;M: Opens the email, clicks the link
+    M-&gt;&gt;S: GET /reset-password?token=8b6d…e1a7
+    S--&gt;&gt;B: 200 "Choose a new password" form (token NOT used yet)
+    U-&gt;&gt;B: Types a new password, presses Save
+    B-&gt;&gt;S: POST /reset-password { token: "8b6d…", newPassword }
+    S-&gt;&gt;DB: Find + DELETE sha256("8b6d…") (not expired ✓)
+    S-&gt;&gt;DB: UPDATE user u_1 SET passwordHash = scrypt(new)
+    S-&gt;&gt;DB: DELETE all sessions WHERE userId = "u_1"
+    S-&gt;&gt;M: "Your password was changed"
+    S--&gt;&gt;B: 200 "Password changed. Please log in."
+    A-&gt;&gt;S: GET /me (cookie sid=7c1e…)
+    S--&gt;&gt;A: 401 Not logged in ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 3: the database gets only the <b>hash</b> of the token. The plain token goes only into the email (step 4).</li>
+          <li>Steps 7–8: opening the link just shows the form. Nothing changes yet.</li>
+          <li>Step 11: the token is found and <b>deleted in one go</b>, so the link is single-use.</li>
+          <li>Step 13: <b>every</b> session is deleted, so Priya's laptop is kicked out (steps 16–17).</li>
+          <li>Step 14: the notice email warns Rahul if he didn't ask for the reset.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="forgot">
+      <h2>3. Forgot request: always the same reply</h2>
+      <p class="lead">What happens on <code>POST /forgot-password</code>. Every path ends in the same answer.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Reset email sent</span>
+        <span class="chip"><i class="trap"></i>Nothing sent, but the reply looks the same</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /forgot-password&lt;br/&gt;{ email }"]) --&gt; B{"Does the account exist?"}
+    B -- No --&gt; N["Send nothing"]
+    B -- Yes --&gt; D{"Reset email sent&lt;br/&gt;less than 1 min ago?"}
+    D -- Yes --&gt; N
+    D -- No --&gt; K["Delete ALL old reset tokens&lt;br/&gt;for this user"]
+    K --&gt; T["Create a new token&lt;br/&gt;and email the link&lt;br/&gt;(built from BASE_URL, not Host)"]
+    N --&gt; R[/"202 Accepted&lt;br/&gt;If an account exists for that email,&lt;br/&gt;we've sent a reset link."/]
+    T --&gt; R
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class T ok
+    class N trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Two reasons to send <b>nothing</b>: no such account, or a reset email was sent less than a minute ago.</li>
+          <li>Every path ends in the <b>same <code>202</code> reply</b>, so attackers can't use this page to find out who has an account.</li>
+          <li>The <b>cooldown</b> stops attackers from using your app to flood someone's inbox.</li>
+          <li>Before sending, <b>all old reset links are deleted</b>, so only the newest email works.</li>
+          <li>The link uses your own <b>BASE_URL</b>. If it used the request's <code>Host</code> header, an attacker could make the real email point to their site.</li>
+        </ol>
+        <p class="tip">In a real app, send the email from a background job, so "account exists" and "no account" take the same time to answer.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
