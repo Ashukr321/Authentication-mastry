@@ -1,8 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Self-contained server in .next/standalone, used by the Dockerfile
-  output: "standalone",
+  // Self-contained server in .next/standalone, only for the Dockerfile (Vercel's build breaks with it)
+  output: process.env.BUILD_STANDALONE ? "standalone" : undefined,
 
   // ✏️ Add your image domains here
   images: {

@@ -28,12 +28,14 @@ export type Level = {
 
 const CODE_FILE = /\.(m?js|ts)$/;
 
+// turbopackIgnore: pages are prerendered at build time, so the notes need not be bundled into the server
+// (without it the whole repo gets traced into the deployment)
 const read = (...parts: string[]) =>
-    fs.readFileSync(path.join(CONTENT_ROOT, ...parts), "utf8");
+    fs.readFileSync(/*turbopackIgnore: true*/ path.join(CONTENT_ROOT, ...parts), "utf8");
 
 const subDirs = (dir: string, pattern: RegExp) =>
     fs
-        .readdirSync(path.join(CONTENT_ROOT, dir), { withFileTypes: true })
+        .readdirSync(/*turbopackIgnore: true*/ path.join(CONTENT_ROOT, dir), { withFileTypes: true })
         .filter((d) => d.isDirectory() && pattern.test(d.name))
         .map((d) => d.name);
 
@@ -65,7 +67,7 @@ export function hasNotesContent(markdown: string) {
 function loadTopic(levelSlug: string, slug: string): TopicMeta {
     const readme = read(levelSlug, slug, "README.md");
     const h1 = readme.match(/^#\s+(\d+)\.\s+(.+)$/m);
-    const files = fs.readdirSync(path.join(CONTENT_ROOT, levelSlug, slug));
+    const files = fs.readdirSync(/*turbopackIgnore: true*/ path.join(CONTENT_ROOT, levelSlug, slug));
     return {
         levelSlug,
         slug,

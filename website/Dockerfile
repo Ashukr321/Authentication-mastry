@@ -16,7 +16,8 @@ ARG NEXT_PUBLIC_APP_URL=http://localhost:3000
 ARG NEXT_PUBLIC_REPO_URL=https://github.com/Ashukr321/Authentication-mastry
 ENV NEXT_PUBLIC_APP_URL=${NEXT_PUBLIC_APP_URL} \
     NEXT_PUBLIC_REPO_URL=${NEXT_PUBLIC_REPO_URL} \
-    NEXT_TELEMETRY_DISABLED=1
+    NEXT_TELEMETRY_DISABLED=1 \
+    BUILD_STANDALONE=1
 COPY . .
 COPY --from=deps /repo/website/node_modules ./website/node_modules
 WORKDIR /repo/website
