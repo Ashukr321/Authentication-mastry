@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>12. Email Verification: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 2 · TOPIC 12</div>
+    <h1>Email Verification: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">email verification notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#resend">3. Resend</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server checks when someone clicks the link in the email: <code>GET /verify-email?token=…</code></p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="trap"></i>Token deleted: it can never be used again</span>
+        <span class="chip"><i class="db"></i>Token store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["User clicks the link&lt;br/&gt;GET /verify-email?token=9f3a…"]) --&gt; B{"Is there a token&lt;br/&gt;with 64 hex characters?"}
+    B -- No --&gt; E1[/"400 Bad Request&lt;br/&gt;This link is invalid or has expired"/]
+    B -- Yes --&gt; C["key = sha256(token)"]
+    C --&gt; D[("Look up the key&lt;br/&gt;in the token store")]
+    D --&gt; F{"Found?"}
+    F -- "No: never existed,&lt;br/&gt;or already used" --&gt; E1
+    F -- Yes --&gt; X["Delete the token NOW&lt;br/&gt;(single use)"]
+    X --&gt; G{"Expired?&lt;br/&gt;older than 24 h"}
+    G -- Yes --&gt; E1
+    G -- No --&gt; H["user.emailVerified = true&lt;br/&gt;user.verifiedAt = now"]
+    H --&gt; OK[/"200 OK&lt;br/&gt;Email verified! You can now log in."/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1 error
+    class OK ok
+    class X trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: the user clicks the link from their email.</li>
+          <li><b>Diamonds</b> are questions the server asks. Follow <b>Yes</b> or <b>No</b>.</li>
+          <li>The server <b>hashes</b> the token before looking it up, because only hashes are stored.</li>
+          <li>The <b>yellow</b> box: the token is deleted <b>before</b> the expiry check, so it can never be used twice.</li>
+          <li>Every failure ends in the <b>same red box</b>. The attacker can't tell "fake" from "used" from "expired".</li>
+        </ol>
+        <p class="tip">Expiry is checked by the <b>server</b> using <code>expiresAt</code> from the store. Nothing in the link itself is trusted except the random token.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The whole journey: signup creates an unverified user, the email carries the secret link, and login only works after the click.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Rahul
+    participant B as Browser
+    participant S as Server
+    participant DB as Database
+    participant M as Email inbox
+
+    U-&gt;&gt;B: Fills the signup form
+    B-&gt;&gt;S: POST /signup { email: "rahul@mail.com", password }
+    S-&gt;&gt;DB: INSERT user { id: "u_1", emailVerified: false }
+    Note over S: token = randomBytes(32) → "9f3a…c21d"
+    S-&gt;&gt;DB: INSERT token { sha256("9f3a…"), userId: "u_1", expiresAt: +24 h }
+    S-&gt;&gt;M: "Verify your email" + myapp.com/verify-email?token=9f3a…c21d
+    S--&gt;&gt;B: 201 { emailVerified: false, "Check your email" }
+    U-&gt;&gt;B: Tries to log in right away
+    B-&gt;&gt;S: POST /login { email, password }
+    Note over S: Password correct ✓&lt;br/&gt;but emailVerified is false
+    S--&gt;&gt;B: 403 "Please verify your email first"
+    U-&gt;&gt;M: Opens the email
+    M-&gt;&gt;S: GET /verify-email?token=9f3a…c21d (the click)
+    S-&gt;&gt;DB: Find + DELETE sha256("9f3a…")
+    DB--&gt;&gt;S: { userId: "u_1", expiresAt } (not expired ✓)
+    S-&gt;&gt;DB: UPDATE user u_1 SET emailVerified = true
+    S--&gt;&gt;B: 200 "Email verified! You can now log in."
+    B-&gt;&gt;S: POST /login { email, password }
+    S--&gt;&gt;B: 200 Logged in ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>The <b>numbers</b> show the order things happen.</li>
+          <li>Step 5: the database gets only the <b>hash</b> of the token. The plain token goes only into the email (step 6).</li>
+          <li>Steps 8–11: login is blocked, but only <b>after</b> the password is checked.</li>
+          <li>Step 14: the token is found and <b>deleted in one go</b>, so the link is single-use.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="resend">
+      <h2>3. Resend: only the newest link works</h2>
+      <p class="lead">The user asks for a new link. The reply is always the same, and old links die.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>New email sent</span>
+        <span class="chip"><i class="trap"></i>Nothing sent, but the reply looks the same</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /resend-verification&lt;br/&gt;{ email }"]) --&gt; B{"Does the account exist?"}
+    B -- No --&gt; N["Send nothing"]
+    B -- Yes --&gt; C{"Already verified?"}
+    C -- Yes --&gt; N
+    C -- No --&gt; D{"Last email sent&lt;br/&gt;less than 1 min ago?"}
+    D -- Yes --&gt; N
+    D -- No --&gt; K["Delete ALL old tokens&lt;br/&gt;for this user"]
+    K --&gt; T["Create a new token&lt;br/&gt;and email the new link"]
+    N --&gt; R[/"202 Accepted&lt;br/&gt;If that account exists and isn't verified yet,&lt;br/&gt;we've sent a new link."/]
+    T --&gt; R
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class T ok
+    class N trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Three reasons to send <b>nothing</b>: no such account, already verified, or an email was sent less than a minute ago.</li>
+          <li>Every path ends in the <b>same <code>202</code> reply</b>, so attackers can't use this button to find out who has an account.</li>
+          <li>The <b>cooldown</b> stops attackers from using your app to flood someone's inbox.</li>
+          <li>Before sending, <b>all old tokens are deleted</b>, so only the link in the newest email works.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

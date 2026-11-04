@@ -97,7 +97,7 @@ export default async function TopicPage({ params }: Props) {
                 </Link>{" "}
                 › {meta.number}
             </p>
-            <h1 className="mt-2 text-4xl font-bold tracking-tight sm:text-5xl">
+            <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
                 <span className="text-accent">{meta.number}.</span> {meta.title}
             </h1>
 

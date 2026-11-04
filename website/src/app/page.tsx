@@ -57,7 +57,7 @@ export default function Home() {
                     unoptimized
                     className="w-full rounded-2xl border border-border"
                 />
-                <h1 className="mt-10 text-4xl font-bold tracking-tight sm:text-5xl">Authentication Mastery</h1>
+                <h1 className="mt-10 text-3xl font-bold tracking-tight sm:text-4xl">Authentication Mastery</h1>
                 <hr className="my-8 border-border" />
                 <p className="text-lg leading-relaxed text-muted">
                     <strong className="text-fg">

@@ -44,7 +44,7 @@ export default async function LevelPage({ params }: Props) {
                 </Link>{" "}
                 › Level {level.number}
             </p>
-            <h1 className="mt-2 text-4xl font-bold tracking-tight sm:text-5xl">
+            <h1 className="mt-2 text-3xl font-bold tracking-tight sm:text-4xl">
                 <span className="block font-mono text-sm tracking-widest text-accent uppercase">
                     Level {level.number}
                 </span>
