@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>10. Cookie Flags: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 1 · TOPIC 10</div>
+    <h1>Cookie Flags: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">cookie flags notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram: does the browser send this cookie?</h2>
+      <p class="lead">Before <b>every</b> request, the <b>browser</b> (not the server) runs these checks for each cookie it has stored. The cookie is attached only if <b>all</b> of them pass.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Cookie is sent</span>
+        <span class="chip"><i class="error"></i>Cookie is not sent</span>
+        <span class="chip"><i class="trap"></i>Expired: deleted by the browser</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["The browser is about to send a request&lt;br/&gt;e.g. GET shop.com/cart"]) --&gt; B{"Does the Domain match?&lt;br/&gt;no Domain: exact host only&lt;br/&gt;Domain=shop.com: also subdomains"}
+    B -- No --&gt; N1[/"Not sent"/]
+    B -- Yes --&gt; C{"Does the Path match?&lt;br/&gt;Path=/admin: only /admin/..."}
+    C -- No --&gt; N1
+    C -- Yes --&gt; D{"Expired?&lt;br/&gt;Max-Age or Expires has passed"}
+    D -- Yes --&gt; DEL["The browser deletes it"]
+    DEL --&gt; N1
+    D -- No --&gt; E{"Secure cookie, but the&lt;br/&gt;request is plain http://?"}
+    E -- Yes --&gt; N1
+    E -- No --&gt; F{"Is the request&lt;br/&gt;same-site?"}
+    F -- Yes --&gt; OK[/"Sent&lt;br/&gt;Cookie: name=value"/]
+    F -- "No, cross-site" --&gt; G{"SameSite value?"}
+    G -- None --&gt; OK
+    G -- Strict --&gt; N2[/"Not sent&lt;br/&gt;(this is what blocks CSRF)"/]
+    G -- Lax --&gt; H{"Top-level GET navigation?&lt;br/&gt;e.g. clicking a link"}
+    H -- Yes --&gt; OK
+    H -- "No: POST, iframe, fetch, img" --&gt; N2
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class N1,N2 error
+    class OK ok
+    class DEL trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: the browser is about to send a request.</li>
+          <li><b>Diamonds</b> are the browser's questions, one per flag. Follow <b>Yes</b> or <b>No</b>.</li>
+          <li><code>Domain</code>, <code>Path</code>, <code>Max-Age</code> and <code>Secure</code> come first. Failing any of them means "not sent".</li>
+          <li><code>SameSite</code> only matters for <b>cross-site</b> requests (started by another website).</li>
+          <li><code>Lax</code> allows clicking a link, but blocks a cross-site form <code>POST</code>, which is exactly what a CSRF attack uses.</li>
+        </ol>
+        <p class="tip"><code>HttpOnly</code> isn't in this chart because it doesn't change <b>sending</b>. It only hides the cookie from JavaScript (see the data flow).</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow: the flags protecting a session</h2>
+      <p class="lead">One session cookie with the recommended flags, facing an XSS script and a CSRF attack from <code>evil.com</code>, plus a normal link click that still works.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant S as shop.com (server)
+    participant B as Browser (cookie jar)
+    participant X as XSS script on shop.com
+    participant E as evil.com
+
+    S--&gt;&gt;B: Set-Cookie: __Host-sessionId=k9X2… (HttpOnly, Secure, SameSite=Lax, Path=/)
+    Note over B: Stores the value together with its rules
+    B-&gt;&gt;S: GET https://shop.com/cart + Cookie: __Host-sessionId=k9X2…
+    Note over S: The server only receives name=value,&lt;br/&gt;never the flags
+    X-&gt;&gt;B: Reads document.cookie
+    B--&gt;&gt;X: "" (HttpOnly cookies are hidden from JavaScript)
+    Note over X: Can't steal the session ✓
+    E-&gt;&gt;B: A hidden form auto-submits POST https://shop.com/transfer
+    Note over B: Cross-site POST + SameSite=Lax&lt;br/&gt;so the cookie is NOT attached
+    B-&gt;&gt;S: POST /transfer (no cookie)
+    S--&gt;&gt;B: 401 Please log in (CSRF blocked ✓)
+    E-&gt;&gt;B: The user clicks a normal link to https://shop.com
+    Note over B: Cross-site, but a top-level GET + Lax&lt;br/&gt;so the cookie IS attached
+    B-&gt;&gt;S: GET https://shop.com + Cookie: __Host-sessionId=k9X2…
+    S--&gt;&gt;B: 200 OK, still logged in ✓
+    Note over B,S: Over plain http://shop.com, this Secure cookie&lt;br/&gt;would never be sent at all
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one actor. The <b>browser</b> is the one enforcing the rules.</li>
+          <li><b>Solid arrows</b> are requests or actions, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 4–5: <code>HttpOnly</code> hides the cookie from the XSS script.</li>
+          <li>Steps 6–8: <code>SameSite=Lax</code> drops the cookie from evil.com's form <code>POST</code>.</li>
+          <li>Steps 9–11: a normal link from another site still keeps you logged in.</li>
+        </ol>
+      </aside>
+      </div>
+      <p class="tip">The <b>server can't see the flags</b>. It only receives <code>Cookie: name=value</code>. All the protection comes from the browser following the rules the server set in <code>Set-Cookie</code>.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
