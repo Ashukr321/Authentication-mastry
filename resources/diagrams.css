@@ -75,6 +75,11 @@ section > p.lead { margin: 0 0 16px; color: var(--muted); }
 .layout.wide aside ol { display: flex; flex-wrap: wrap; gap: 4px 28px; list-style-position: inside; padding: 0; }
 
 .diagram { overflow-x: auto; text-align: center; }
+.diagram h3 { margin: 0; }
+.diagram .lead { margin: 0 0 8px; color: var(--muted); font-size: 14px; }
+/* Two small diagrams side by side (e.g. "bad" vs "good") */
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .pair { grid-template-columns: 1fr; } }
 .diagram .mermaid { margin: 0; }
 
 aside {

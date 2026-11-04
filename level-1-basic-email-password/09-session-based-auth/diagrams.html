@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>09. Session-Based Auth: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 1 · TOPIC 09</div>
+    <h1>Session-Based Auth: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">session-based auth notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#scale">3. Scaling</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server checks on every request to a protected page. In real apps this check lives in one <code>requireAuth</code> middleware.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="trap"></i>Expired: the session is deleted</span>
+        <span class="chip"><i class="db"></i>Session store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Request to a protected page&lt;br/&gt;e.g. GET /me"]) --&gt; B{"Does the cookie&lt;br/&gt;have a sessionId?"}
+    B -- No --&gt; E1[/"401 Unauthorized&lt;br/&gt;Please log in"/]
+    B -- Yes --&gt; C["key = sha256(sessionId)"]
+    C --&gt; D[("Look up the key&lt;br/&gt;in the session store")]
+    D --&gt; F{"Session&lt;br/&gt;found?"}
+    F -- No --&gt; E1
+    F -- Yes --&gt; G{"Idle too long?&lt;br/&gt;no request for 30 min"}
+    G -- Yes --&gt; X["Delete the session&lt;br/&gt;from the store"]
+    G -- No --&gt; H{"Too old?&lt;br/&gt;created more than 8 h ago"}
+    H -- Yes --&gt; X
+    X --&gt; E2[/"401 Unauthorized&lt;br/&gt;Session expired, please log in again"/]
+    H -- No --&gt; I["Refresh: lastSeenAt = now&lt;br/&gt;(sliding idle timeout)"]
+    I --&gt; J["Load the user by session.userId"]
+    J --&gt; OK[/"200 OK&lt;br/&gt;the page for rahul"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2 error
+    class OK ok
+    class X trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: a request arrives with (or without) a cookie.</li>
+          <li><b>Diamonds</b> are questions the server asks. Follow <b>Yes</b> or <b>No</b>.</li>
+          <li>The server <b>hashes</b> the ID before looking it up, so a leaked store is useless.</li>
+          <li><b>Two timers</b>: idle (no activity) and absolute (too old). Either one ends the session.</li>
+          <li>The <b>yellow</b> box: expired sessions are deleted right away.</li>
+          <li>Every successful request <b>refreshes</b> <code>lastSeenAt</code>, so active users stay logged in.</li>
+        </ol>
+        <p class="tip">The server checks expiry <b>itself</b>. It never trusts the cookie's <code>Max-Age</code>, because an attacker can keep using an old cookie value.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The whole life of one session: created at login, read on every request, deleted at logout. It also shows why a stolen cookie stops working after logout.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant B as Browser
+    participant S as Server
+    participant SS as Session store
+    actor A as Attacker
+
+    U-&gt;&gt;B: Logs in with email + password
+    B-&gt;&gt;S: POST /login { email, password }
+    Note over S: Password correct ✓&lt;br/&gt;sessionId = randomBytes(32) → "k9X2…"
+    S-&gt;&gt;SS: SET sha256("k9X2…") → { userId: "u_1", createdAt, lastSeenAt }
+    S--&gt;&gt;B: 200 OK + Set-Cookie: sessionId=k9X2… (HttpOnly)
+    Note over B: The cookie holds ONLY the random ID.&lt;br/&gt;No name, no email, no password.
+    U-&gt;&gt;B: Opens the profile page
+    B-&gt;&gt;S: GET /me + Cookie: sessionId=k9X2… (sent automatically)
+    S-&gt;&gt;SS: GET sha256("k9X2…")
+    SS--&gt;&gt;S: { userId: "u_1", lastSeenAt: 10:30 }
+    Note over S: Not expired ✓&lt;br/&gt;Refresh lastSeenAt = 10:42
+    S--&gt;&gt;B: 200 OK { "email": "rahul@mail.com" }
+    Note over A: Somehow copies the cookie "k9X2…"
+    U-&gt;&gt;B: Clicks "Log out"
+    B-&gt;&gt;S: POST /logout + Cookie: sessionId=k9X2…
+    S-&gt;&gt;SS: DELETE sha256("k9X2…")
+    S--&gt;&gt;B: 204 + Set-Cookie: sessionId= (Max-Age=0)
+    A-&gt;&gt;S: GET /me + Cookie: sessionId=k9X2… (the stolen copy)
+    S-&gt;&gt;SS: GET sha256("k9X2…")
+    SS--&gt;&gt;S: nothing found
+    S--&gt;&gt;A: 401 Please log in
+    Note over S,A: The stolen cookie is useless after logout,&lt;br/&gt;because the session no longer exists on the server
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. The <b>Attacker</b> is someone who copied the cookie.</li>
+          <li><b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>The <b>numbers</b> show the order things happen.</li>
+          <li>The browser only ever holds <code>k9X2…</code>. The real data (<code>userId</code>, timestamps) stays in the <b>session store</b>.</li>
+          <li>Steps 15–18: after logout, the stolen copy points to <b>nothing</b>.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="scale">
+      <h2>3. Scaling: why the store must be shared</h2>
+      <p class="lead">Real apps run several copies of the server behind a load balancer. Each request can land on a different server.</p>
+      <div class="layout wide">
+        <div class="pair">
+          <div class="diagram"><h3>❌ In-memory store</h3><p class="lead">Each server has its own memory</p><pre class="mermaid">
+flowchart TB
+    B1[Browser] --&gt; LB1{{Load balancer}}
+    LB1 --&gt;|"step 1: POST /login"| SA["Server A&lt;br/&gt;memory: k9X2 → u_1"]
+    LB1 --&gt;|"step 2: GET /me"| SB["Server B&lt;br/&gt;memory: empty"]
+    SB --&gt; R1[/"401 Please log in 😕"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class R1 error
+</pre></div>
+          <div class="diagram"><h3>✅ Shared store</h3><p class="lead">All servers use one Redis</p><pre class="mermaid">
+flowchart TB
+    B2[Browser] --&gt; LB2{{Load balancer}}
+    LB2 --&gt;|"step 1: POST /login"| SC[Server A]
+    LB2 --&gt;|"step 2: GET /me"| SD[Server B]
+    SC --&gt;|"save session"| RD[("Redis&lt;br/&gt;k9X2 → u_1")]
+    SD --&gt;|"look up session"| RD
+    SD --&gt; R2[/"200 OK ✓"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class R2 ok
+</pre></div>
+        </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>❌ In-memory store:</b> login lands on Server A and the session is saved in <b>A's memory</b>.</li>
+          <li>The next request lands on <b>Server B</b>, which has never seen that session, so the user is "logged out".</li>
+          <li><b>✅ Shared store:</b> both servers read and write <b>one shared Redis</b>, so any server can find any session.</li>
+        </ol>
+      </aside>
+      </div>
+      <p class="tip">Another option is <b>sticky sessions</b> (the load balancer always sends a user to the same server), but sessions are still lost when that server restarts. A shared store is the standard fix.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
