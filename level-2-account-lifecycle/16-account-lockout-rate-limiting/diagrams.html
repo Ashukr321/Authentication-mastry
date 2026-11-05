@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>16. Account Lockout &amp; Rate Limiting: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 2 · TOPIC 16</div>
+    <h1>Account Lockout &amp; Rate Limiting: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">lockout and rate limiting notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#layers">3. Two layers</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">The order of checks on <code>POST /login</code>. The cheap checks come first, and the expensive password hash comes last.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Refused</span>
+        <span class="chip"><i class="trap"></i>Lock starts: the wait doubles each time</span>
+        <span class="chip"><i class="db"></i>Counters (Redis in production)</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /login&lt;br/&gt;{ email, password }"]) --&gt; IP[("IP counter + 1")]
+    IP --&gt; Q1{"More than 20&lt;br/&gt;this minute?"}
+    Q1 -- Yes --&gt; E1[/"429 Too many requests&lt;br/&gt;Retry-After: 36"/]
+    Q1 -- No --&gt; Q2{"This email&lt;br/&gt;locked right now?"}
+    Q2 -- "Yes (even if the&lt;br/&gt;password is right)" --&gt; E2[/"429 Too many failed attempts&lt;br/&gt;Retry-After: 5"/]
+    Q2 -- No --&gt; H["scrypt check&lt;br/&gt;(dummy hash if no account)"]
+    H --&gt; Q3{"Password right?"}
+    Q3 -- Yes --&gt; RS["Reset failures&lt;br/&gt;and backoff"]
+    RS --&gt; OK[/"200 Logged in"/]
+    Q3 -- No --&gt; F["failures + 1&lt;br/&gt;(for the typed email,&lt;br/&gt;account or not)"]
+    F --&gt; Q4{"5 failures?"}
+    Q4 -- No --&gt; E3[/"401 Invalid email or password"/]
+    Q4 -- Yes --&gt; L["Lock for 1, 2, 4… min&lt;br/&gt;(max 1 hour)&lt;br/&gt;email the real owner"]
+    L --&gt; E3
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3 error
+    class OK ok
+    class L trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Layer 1</b> (top): the IP limit runs before anything else, so a flood never reaches the expensive hash.</li>
+          <li><b>Layer 2</b>: a locked email is refused <b>before</b> the password is checked, so even the right password gets <code>429</code>.</li>
+          <li>Failures are counted for the <b>typed email</b>, so accounts that don't exist lock the same way (no enumeration).</li>
+          <li>The <b>yellow</b> box: each new lock is twice as long. It never lasts forever, so attackers can't lock real users out for good.</li>
+          <li>A correct password resets the counters.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Priya guesses Rahul's password. His account locks, Rahul gets an email, and Priya's script then hits the per-IP limit.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor A as Priya's script (IP 203.0.113.7)
+    participant S as Server
+    participant R as Counters
+    participant M as Rahul's inbox
+
+    loop 5 times
+        A-&gt;&gt;S: POST /login { rahul@mail.com, "guess" }
+        S-&gt;&gt;R: ip 203.0.113.7 + 1 (under 20 ✓), email not locked ✓
+        S-&gt;&gt;R: failures("rahul@mail.com") + 1
+        S--&gt;&gt;A: 401 Invalid email or password
+    end
+    S-&gt;&gt;R: 5 failures → lockedUntil = now + 1 min
+    S-&gt;&gt;M: "Someone is trying to log in to your account"
+    A-&gt;&gt;S: POST /login { rahul@mail.com, "correct horse battery" }
+    S-&gt;&gt;R: email locked for 60 s
+    S--&gt;&gt;A: 429 Retry-After: 60 (even the right password)
+    A-&gt;&gt;S: POST /login { priya@mail.com, "Password@123" } … 14 more emails
+    S--&gt;&gt;A: 401 401 401 …
+    A-&gt;&gt;S: POST /login (request 21 this minute)
+    S-&gt;&gt;R: ip 203.0.113.7 = 21, over 20
+    S--&gt;&gt;A: 429 Too many requests (RateLimit-Remaining: 0, Retry-After: 36)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>The <b>loop</b>: 5 wrong guesses. Each one counts against the IP <b>and</b> the email.</li>
+          <li>After the 5th, the email is locked and the <b>real</b> owner gets an email. The script gets nothing extra.</li>
+          <li>Even a correct guess now gets <code>429</code>, so the script can't tell it guessed right.</li>
+          <li>The script switches to <b>other accounts</b> (password spraying). The account locks don't help here, but the <b>per-IP limit</b> stops it after 20 tries.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="layers">
+      <h2>3. Two layers: each one covers the other's blind spot</h2>
+      <p class="lead">Two common attacks. Each one is stopped by a different layer.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Attack stopped</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["Brute force&lt;br/&gt;ONE account,&lt;br/&gt;many passwords"]) --&gt; B1["rahul123, rahul@123,&lt;br/&gt;Rahul1990 … all on&lt;br/&gt;Rahul's account"]
+    B1 --&gt; C1["Per-IP limit: slows it,&lt;br/&gt;but a botnet has&lt;br/&gt;thousands of IPs"]
+    C1 --&gt; D1[/"Account lockout stops it:&lt;br/&gt;5 tries, then 1, 2, 4… min waits"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class D1 ok
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["Password spraying&lt;br/&gt;MANY accounts,&lt;br/&gt;one password each"]) --&gt; B2["Password@123 on&lt;br/&gt;10,000 different emails"]
+    B2 --&gt; C2["Account lockout: never&lt;br/&gt;triggers, only 1 failure&lt;br/&gt;per account"]
+    C2 --&gt; D2[/"Per-IP rate limit stops it:&lt;br/&gt;20 tries per minute per IP"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class D2 ok
+</pre></div>
+      </div>
+      <p class="tip">Attacks from a <b>botnet</b> (thousands of IPs, a few tries each) get past both layers. That's where MFA, breached-password checks, CAPTCHA and bot detection come in.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

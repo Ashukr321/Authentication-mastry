@@ -1,0 +1,10 @@
+{
+  "name": "17-account-deletion-deactivation",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
