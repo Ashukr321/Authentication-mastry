@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>22. Access Token Expiry &amp; Silent Refresh: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 22</div>
+    <h1>Access Token Expiry &amp; Silent Refresh: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">silent refresh notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#reload">3. Page load and timer</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the frontend's <b>api()</b> wrapper does on every request</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>The user sees the data</span>
+        <span class="chip"><i class="error"></i>Login page / real error</span>
+        <span class="chip"><i class="trap"></i>Shared refresh: one call for everyone waiting</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["api('/me')&lt;br/&gt;Authorization: Bearer token-in-memory"]) --&gt; R{"Response?"}
+    R -- "200" --&gt; OK[/"Show the data"/]
+    R -- "403 / 5xx /&lt;br/&gt;401 invalid_token" --&gt; ERR[/"Real error:&lt;br/&gt;don't refresh"/]
+    R -- "401 token_expired" --&gt; P{"A refresh already&lt;br/&gt;in flight?"}
+    P -- Yes --&gt; W["Await the SAME&lt;br/&gt;refreshPromise"]
+    P -- No --&gt; N["Start POST /auth/refresh,&lt;br/&gt;save it as refreshPromise"]
+    N --&gt; W
+    W --&gt; RF{"Refresh OK?"}
+    RF -- No --&gt; LOGIN[/"Clear token + timer,&lt;br/&gt;show the login page"/]
+    RF -- Yes --&gt; RT["Retry the request ONCE&lt;br/&gt;with the new token"]
+    RT --&gt; OK
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class ERR,LOGIN error
+    class OK ok
+    class P,W trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Every API call goes through <b>one</b> wrapper (or an axios interceptor).</li>
+          <li>Only <code>401 token_expired</code> triggers a refresh. A tampered token or a <code>403</code> won't be fixed by refreshing.</li>
+          <li>The <b>yellow</b> boxes are single-flight: 5 expired requests share <b>1</b> refresh call.</li>
+          <li>The request is retried <b>once</b>. There is no arrow back to the top, so no endless loop.</li>
+          <li>If the refresh fails, the refresh token is dead: go to the login page.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul's dashboard: the timer refreshes early once. Later the laptop sleeps, the token expires, and 5 requests fire at the same moment.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant B as Rahul's browser
+    participant S as Server
+
+    B-&gt;&gt;S: POST /auth/login { email, password }
+    S--&gt;&gt;B: 200 { accessToken: "eyJ…A", expiresIn: 900 } + refreshToken cookie
+    Note over B: timer set for 900 - 60 = 840 s
+    Note over B,S: 14 minutes later: timer fires (proactive)
+    B-&gt;&gt;S: POST /auth/refresh (cookie)
+    S--&gt;&gt;B: 200 { accessToken: "eyJ…B", expiresIn: 900 }
+    Note over B: the laptop sleeps, the timer is missed, "eyJ…B" expires
+    par 5 requests at the same moment
+        B-&gt;&gt;S: GET /me, /orders, /cart, … (Bearer eyJ…B)
+    end
+    S--&gt;&gt;B: 401 token_expired (×5)
+    Note over B: first 401 starts the refresh, the other 4 await the same promise
+    B-&gt;&gt;S: POST /auth/refresh (cookie), only ONE
+    S--&gt;&gt;B: 200 { accessToken: "eyJ…C", expiresIn: 900 }
+    B-&gt;&gt;S: retry all 5 (Bearer eyJ…C)
+    S--&gt;&gt;B: 200 (×5), Rahul saw nothing
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: the server sends <code>expiresIn</code>, and the client sets a timer that fires <b>early</b>.</li>
+          <li>Steps 3–4: proactive refresh. No request ever saw a <code>401</code>.</li>
+          <li>Steps 5–6: timers can be missed (sleep, throttled tabs), so expired requests still happen.</li>
+          <li>Steps 7–10: the reactive safety net. <b>One</b> refresh, then every request is retried once.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="reload">
+      <h2>3. Page load and the timer</h2>
+      <p class="lead">The access token lives only in memory. The refresh cookie brings it back after a reload, and the timer keeps it fresh.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Login page</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["Page load or new tab&lt;br/&gt;accessToken = null"]) --&gt; B1["POST /auth/refresh&lt;br/&gt;browser sends the&lt;br/&gt;HttpOnly cookie"]
+    B1 --&gt; C1{"200?"}
+    C1 -- Yes --&gt; D1[/"Logged in again,&lt;br/&gt;token in memory"/]
+    C1 -- "No: logged out&lt;br/&gt;or expired" --&gt; E1[/"Show the login page"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class D1 ok
+    class E1 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["New token&lt;br/&gt;expiresIn = 900 s"]) --&gt; B2["setTimeout:&lt;br/&gt;900 s minus 60 s early"]
+    B2 --&gt; C2["Timer fires:&lt;br/&gt;refresh in the background"]
+    C2 --&gt; D2{"200?"}
+    D2 -- Yes --&gt; A2
+    D2 -- No --&gt; E2[/"Show the login page"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class E2 error
+</pre></div>
+      </div>
+      <p class="tip">Refresh <b>early</b>, never exactly at <code>exp</code>: client and server clocks differ, and the request needs time to arrive. With rotation (topic 23), single-flight and the multi-tab case become essential.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
