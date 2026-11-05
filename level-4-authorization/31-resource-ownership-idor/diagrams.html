@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>31. Resource Ownership Checks (IDOR): Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 4 · TOPIC 31</div>
+    <h1>Resource Ownership Checks (IDOR): Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">IDOR notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#checklist">3. The checklist</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Any request that carries an id: the owner comes from the token, and goes into the lookup.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Allowed</span>
+        <span class="chip"><i class="error"></i>Stopped</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["PATCH /orders/ord_1002&lt;br/&gt;Bearer Rahul's token&lt;br/&gt;body: address"]) --&gt; AU{"Logged in?"}
+    AU -- No --&gt; U[/"401 Please log in"/]
+    AU -- "Yes: req.user = u_rahul" --&gt; Q["findOrder(ord_1002, owner = u_rahul)&lt;br/&gt;WHERE id = $1 AND user_id = $2"]
+    Q --&gt; F{"Found?"}
+    F -- "No: missing OR someone else's" --&gt; N[/"404 Order not found&lt;br/&gt;+ log the attempt"/]
+    F -- Yes --&gt; W{"Only allowed fields?&lt;br/&gt;(address, phone)"}
+    W -- "No: total, status, userId" --&gt; B[/"400 You can't change: total"/]
+    W -- Yes --&gt; S{"Right state?&lt;br/&gt;(not shipped yet)"}
+    S -- No --&gt; C[/"409 Order has already shipped"/]
+    S -- Yes --&gt; OK[/"✅ update the order"/]
+    A -. "IDOR: findById(ord_1002) only" .-&gt; LEAK["Sneha's order loaded and changed"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class U,N,B,C error
+    class OK ok
+    class LEAK,Q trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The owner is <code>req.user.id</code> from the token. Nothing in the URL, body or query decides who the owner is.</li>
+          <li>The yellow lookup is the heart of it: the owner is <b>part of the query</b>, so someone else's record never comes back.</li>
+          <li>"Missing" and "not yours" give the <b>same 404</b>. The server logs which one it was.</li>
+          <li>For writes, two more checks: only <b>allowed fields</b>, and the record is in a state where the change makes sense.</li>
+          <li>The dotted line is IDOR: load by id alone, and every record is reachable.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul is a real, logged-in customer. He just changes the number in the URL.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul (customer)
+    participant BUG as Buggy API
+    participant API as Fixed API
+    participant DB as Orders
+    participant LOG as Server log
+
+    R-&gt;&gt;BUG: GET /buggy/orders/ord_1002
+    BUG-&gt;&gt;DB: find by id ord_1002
+    DB--&gt;&gt;BUG: Sneha's order
+    BUG--&gt;&gt;R: 200 saree, 18500, 7 Lodhi Colony, phone
+    R-&gt;&gt;BUG: GET /buggy/orders?userId=u_sneha
+    BUG--&gt;&gt;R: 200 Sneha's whole order history
+    R-&gt;&gt;BUG: PATCH /buggy/orders/ord_1001 total 1, status delivered
+    BUG--&gt;&gt;R: 200 his own order now costs 1 rupee
+    Note over R,LOG: the same requests against the fixed API
+    R-&gt;&gt;API: GET /orders/ord_1002
+    API-&gt;&gt;DB: find ord_1002 where owner is u_rahul
+    DB--&gt;&gt;API: nothing
+    API-&gt;&gt;LOG: u_rahul tried GET ord_1002, which belongs to u_sneha
+    API--&gt;&gt;R: 404 Order not found
+    R-&gt;&gt;API: GET /orders?userId=u_sneha
+    API--&gt;&gt;R: 200 only Rahul's orders (the query parameter is ignored)
+    R-&gt;&gt;API: PATCH /orders/ord_1001 total 1, status delivered
+    API--&gt;&gt;R: 400 You can't change total, status
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: the classic IDOR. Login worked perfectly, and it didn't matter.</li>
+          <li>Steps 5–6: the owner taken from the query string instead of the token.</li>
+          <li>Steps 7–8: mass assignment on his <b>own</b> order: ownership alone isn't enough for writes.</li>
+          <li>Steps 9–17: the fixed API scopes every lookup to the token's user, answers 404, logs the probe, and accepts only editable fields.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="checklist">
+      <h2>3. The checklist</h2>
+      <p class="lead">Every place a client can name a record needs the same check. IDOR hides in the ones people forget.</p>
+      <div class="legend">
+        <span class="chip"><i class="trap"></i>Often forgotten</span>
+        <span class="chip"><i class="ok"></i>The check</span>
+      </div>
+      <div class="diagram"><pre class="mermaid">
+flowchart LR
+    ID(["An id from the client"]) --&gt; G["GET /orders/:id"]
+    ID --&gt; W["PATCH, PUT, DELETE&lt;br/&gt;/orders/:id"]
+    ID --&gt; L["Lists and filters&lt;br/&gt;?userId=, ?ids="]
+    ID --&gt; NE["Nested routes&lt;br/&gt;/orders/:id/items/:itemId"]
+    ID --&gt; BO["Ids inside the body&lt;br/&gt;orderId, addressId"]
+    ID --&gt; FI["Files and downloads&lt;br/&gt;invoice_1002.pdf"]
+    ID --&gt; BA["GraphQL, batch, export"]
+    G --&gt; CK["owner = req.user.id&lt;br/&gt;in the query, 404 if not found"]
+    W --&gt; CK
+    L --&gt; CK
+    NE --&gt; CK
+    BO --&gt; CK
+    FI --&gt; CK
+    BA --&gt; CK
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class CK ok
+    class L,NE,BO,FI,BA trap
+</pre></div>
+      <p class="tip">Test it the way attackers do: log in as two users, take user A's ids, and call <b>every</b> endpoint as user B. Random ids (UUIDs) make guessing harder, but the check is still the fix.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
