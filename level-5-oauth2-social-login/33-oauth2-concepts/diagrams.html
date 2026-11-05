@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>33. OAuth 2.0 Concepts: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 33</div>
+    <h1>OAuth 2.0 Concepts: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">OAuth 2.0 concepts notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#roles">3. Roles and channels</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">The checks along the authorization code flow, from PrintKaro's "Import" button to the photos.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Refused</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Rahul clicks Import from PhotoVault"]) --&gt; AZ["PrintKaro stores a random state,&lt;br/&gt;redirects the browser to /authorize"]
+    AZ --&gt; R{"client_id known AND&lt;br/&gt;redirect_uri registered EXACTLY?"}
+    R -- No --&gt; E1[/"Error page on PhotoVault,&lt;br/&gt;NO redirect"/]
+    R -- Yes --&gt; S{"scopes allowed&lt;br/&gt;for this client?"}
+    S -- No --&gt; E2[/"back to the app:&lt;br/&gt;error=invalid_scope"/]
+    S -- Yes --&gt; L["Rahul logs in ON PhotoVault's page,&lt;br/&gt;sees the consent screen"]
+    L --&gt; D{"Allow?"}
+    D -- Deny --&gt; E3[/"back to the app:&lt;br/&gt;error=access_denied"/]
+    D -- Allow --&gt; C["code: random, 60 s, one use,&lt;br/&gt;tied to client + redirect_uri"]
+    C --&gt; ST{"PrintKaro: state matches?"}
+    ST -- No --&gt; E4[/"stop: not started here"/]
+    ST -- Yes --&gt; T{"POST /token: client secret OK,&lt;br/&gt;code valid, unused, same redirect_uri?"}
+    T -- No --&gt; E5[/"invalid_client / invalid_grant&lt;br/&gt;(reused code: revoke its token)"/]
+    T -- Yes --&gt; TK["access_token (10 min, photos.read)&lt;br/&gt;kept on PrintKaro's SERVER"]
+    TK --&gt; API{"API: token valid AND&lt;br/&gt;has the scope?"}
+    API -- "No token / expired" --&gt; E6[/"401 invalid_token"/]
+    API -- "Wrong scope (delete)" --&gt; E7[/"403 insufficient_scope"/]
+    API -- Yes --&gt; OK[/"✅ Rahul's photos only"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4,E5,E6,E7 error
+    class OK ok
+    class R,ST trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The redirect URI check comes <b>first</b>, and a bad one is never redirected to: that's where the code would leak.</li>
+          <li>The password is typed only on <b>PhotoVault's</b> page. PrintKaro never sees it.</li>
+          <li>The code is weak on purpose (it travels through the browser), so it's short-lived, one-use and needs the client secret.</li>
+          <li>The <code>state</code> check (topic 35) stops someone else's code being pushed into Rahul's session.</li>
+          <li>The API checks the token and then the <b>scope</b>. PrintKaro asked for read only, so delete fails.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The full authorization code flow with the real requests from the demo. Watch which arrows go through the browser.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor B as Rahul's browser
+    participant PK as PrintKaro server (client, :3000)
+    participant AS as PhotoVault Accounts (auth server, :3001)
+    participant API as PhotoVault API (resource server, :3002)
+
+    B-&gt;&gt;PK: GET /connect
+    PK-&gt;&gt;PK: save state=sdecQ1pM in Rahul's PrintKaro session
+    PK--&gt;&gt;B: 302 to :3001/authorize?response_type=code, client_id=printkaro, redirect_uri=:3000/callback, scope=photos.read, state=sdecQ1pM
+    B-&gt;&gt;AS: GET /authorize?...
+    AS--&gt;&gt;B: PhotoVault login page
+    B-&gt;&gt;AS: POST /login rahul + password
+    AS--&gt;&gt;B: consent page, PrintKaro wants to See your photos
+    B-&gt;&gt;AS: POST /consent Allow
+    AS--&gt;&gt;B: 303 to :3000/callback?code=aIu08o...&amp;state=sdecQ1pM
+    B-&gt;&gt;PK: GET /callback?code=aIu08o...&amp;state=sdecQ1pM
+    PK-&gt;&gt;PK: state matches the saved one
+    PK-&gt;&gt;AS: POST /token (Basic printkaro:secret) grant_type=authorization_code, code, redirect_uri
+    AS--&gt;&gt;PK: access_token ctawzC..., Bearer, expires_in 600, scope photos.read
+    PK-&gt;&gt;API: GET /photos, Authorization Bearer ctawzC...
+    API--&gt;&gt;PK: Rahul's 3 photos
+    PK--&gt;&gt;B: page with Goa beach sunset, Dadi's 80th birthday, Diwali rangoli
+    Note over B,API: the browser saw the code but never the token, and PrintKaro never saw the password
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: the <b>front channel</b>. PrintKaro can only send the browser to PhotoVault with a URL.</li>
+          <li>Steps 5–9: login and consent happen entirely between the browser and PhotoVault.</li>
+          <li>Steps 10–11: the code comes back through the browser, and PrintKaro checks <code>state</code>.</li>
+          <li>Steps 12–13: the <b>back channel</b>. PrintKaro's server proves who it is with its secret and gets the token.</li>
+          <li>Steps 14–16: the token is used on the API. The browser only ever gets HTML.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="roles">
+      <h2>3. Roles and channels</h2>
+      <p class="lead">The four OAuth roles, and which messages go through the browser (front channel) or directly between servers (back channel).</p>
+      <div class="legend">
+        <span class="chip"><i class="trap"></i>Front channel: through the browser, visible, can be tampered with</span>
+        <span class="chip"><i class="ok"></i>Back channel: server to server</span>
+      </div>
+      <div class="diagram"><pre class="mermaid">
+flowchart LR
+    RO(["Resource owner&lt;br/&gt;Rahul, in his browser"])
+    CL["Client&lt;br/&gt;PrintKaro&lt;br/&gt;client_id + secret"]
+    AS["Authorization server&lt;br/&gt;PhotoVault Accounts&lt;br/&gt;/authorize, /token"]
+    RS["Resource server&lt;br/&gt;PhotoVault API&lt;br/&gt;/photos"]
+
+    RO -- "redirect with client_id, scope, state" --&gt; AS
+    AS -- "login + consent page" --&gt; RO
+    RO -- "redirect back with code + state" --&gt; CL
+    CL == "code + client secret" ==&gt; AS
+    AS == "access token" ==&gt; CL
+    CL == "Bearer access token" ==&gt; RS
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class RO trap
+    class CL,AS,RS ok
+</pre></div>
+      <p class="tip">Thin arrows go through the browser; thick arrows are direct HTTPS calls between servers. Anything secret (client secret, access token) only travels on the thick arrows.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
