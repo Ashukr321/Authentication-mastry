@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>30. Route Guards &amp; Middleware: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 4 · TOPIC 30</div>
+    <h1>Route Guards &amp; Middleware: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">route guards notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#structure">3. Structure</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">The middleware chain for <code>DELETE /products/p_1</code>. Each box can stop the request or pass it on.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Handler runs</span>
+        <span class="chip"><i class="error"></i>Stopped</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["DELETE /products/p_1&lt;br/&gt;Authorization: Bearer token"]) --&gt; J["express.json&lt;br/&gt;(400 bad JSON, 413 too big)"]
+    J --&gt; AU{"authenticate (global):&lt;br/&gt;token present?"}
+    AU -- "No" --&gt; ANON["req.user = null"]
+    AU -- "Yes, but invalid" --&gt; X401[/"401 Invalid or expired token"/]
+    AU -- "Yes, valid" --&gt; USER["req.user = Neha (editor)"]
+    ANON --&gt; M{"route matched?"}
+    USER --&gt; M
+    M -- No --&gt; N404[/"404 Not found"/]
+    M -- Yes --&gt; G1{"requireAuth:&lt;br/&gt;req.user set?"}
+    G1 -- "No: return res.status(401)" --&gt; L401[/"401 Please log in"/]
+    G1 -- "Yes: return next()" --&gt; G2{"requirePermission&lt;br/&gt;products:write?"}
+    G2 -- "No: return res.status(403)" --&gt; F403[/"403 + log"/]
+    G2 -- "Yes: return next()" --&gt; H[/"✅ handler deletes p_1, 204"/]
+    F403 -. "forgot return: next() still runs" .-&gt; BAD["handler runs anyway,&lt;br/&gt;p_1 deleted after a 403"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X401,N404,L401,F403 error
+    class H ok
+    class BAD trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>authenticate</b> runs for every request. No token means anonymous; a <b>bad</b> token is an error right away.</li>
+          <li>The route's <b>guards</b> run in order. Each one either <code>return next()</code> or <code>return res.status(...)</code>.</li>
+          <li>The yellow box is the missing-<code>return</code> bug: the client is told 403, but the handler still runs.</li>
+          <li>Anything that matches no route ends at the <b>404</b> handler; errors end at the error handler.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The three bugs from the demo's bug lab. Each one returns the right-looking answer somewhere, and leaks somewhere else.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul (customer)
+    actor X as Anyone, no token
+    participant G as Buggy guard
+    participant H as Handler
+    participant DB as Products
+
+    Note over R,DB: Bug 1, the guard forgets return
+    R-&gt;&gt;G: DELETE /buggy/products/p_2
+    G--&gt;&gt;R: 403 Admins only
+    G-&gt;&gt;H: next() still called
+    H-&gt;&gt;DB: delete p_2
+    H-&gt;&gt;H: res.json throws, Cannot set headers after they are sent
+    Note over R,DB: Bug 2, startsWith is case-sensitive, routes are not
+    X-&gt;&gt;G: GET /buggy/admin/secrets
+    G--&gt;&gt;X: 403 Admins only
+    X-&gt;&gt;G: GET /BUGGY/ADMIN/secrets
+    G-&gt;&gt;H: "/BUGGY/ADMIN".startsWith("/buggy/admin") is false, so next()
+    H--&gt;&gt;X: 200 UPI merchant key
+    Note over R,DB: Bug 3, route registered above router.use(requireAuth)
+    X-&gt;&gt;H: GET /buggy/reports
+    H--&gt;&gt;X: 200 Today's sales (the guard comes later in the file)
+    X-&gt;&gt;G: GET /buggy/profile
+    G--&gt;&gt;X: 401 Please log in
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests or calls, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–5: the 403 is sent, but the guard doesn't <code>return</code>, so the handler deletes the product anyway.</li>
+          <li>Steps 6–10: Express matches <code>/BUGGY/ADMIN/secrets</code> to the route, but the hand-written check doesn't. Fix: <code>app.use("/admin", guard)</code>.</li>
+          <li>Steps 11–14: a guard only protects routes registered <b>after</b> it. Fix: declare access per route, or put the guard first.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="structure">
+      <h2>3. Structure</h2>
+      <p class="lead">How the fixed app is put together. Every route sits under a guard, and a route without declared access stops the app from starting.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Public on purpose</span>
+        <span class="chip"><i class="trap"></i>Guard</span>
+        <span class="chip"><i class="error"></i>Refused at startup</span>
+      </div>
+      <div class="diagram"><pre class="mermaid">
+flowchart LR
+    REQ(["every request"]) --&gt; AUTH["authenticate&lt;br/&gt;(global, sets req.user)"]
+    AUTH --&gt; PUB["'public'&lt;br/&gt;GET /health, POST /login,&lt;br/&gt;GET /products"]
+    AUTH --&gt; RA["requireAuth"]
+    RA --&gt; USERR["'user'&lt;br/&gt;GET /me"]
+    RA --&gt; RP["requirePermission&lt;br/&gt;products:write"]
+    RP --&gt; PW["POST /products&lt;br/&gt;DELETE /products/:id"]
+    AUTH --&gt; ADM["/admin router&lt;br/&gt;admin.use(requireAuth,&lt;br/&gt;requirePermission admin:access)"]
+    ADM --&gt; ST["GET /admin/stats"]
+    ADM --&gt; UM["requirePermission users:manage"]
+    UM --&gt; US["GET /admin/users"]
+    NEW["route() with no access declared"] --x AUTH
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class PUB ok
+    class RA,RP,ADM,UM trap
+    class NEW error
+</pre></div>
+      <p class="tip">The startup <b>access table</b> (<code>console.table(ROUTES)</code>) is this diagram as text: review it whenever a route is added.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
