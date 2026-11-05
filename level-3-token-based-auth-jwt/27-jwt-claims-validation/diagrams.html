@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>27. JWT Claims Validation: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 27</div>
+    <h1>JWT Claims Validation: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">claims validation notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#anatomy">3. What gets checked</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">The checks in order. Each red exit is the attack that check stops.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Trusted</span>
+        <span class="chip"><i class="error"></i>401 Invalid access token</span>
+        <span class="chip"><i class="trap"></i>Checks you must add yourself (not library defaults)</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Authorization: Bearer header.payload.signature"]) --&gt; ALG{"header.alg in&lt;br/&gt;the allow-list (RS256)?"}
+    ALG -- "No: none, HS256 with&lt;br/&gt;the public key" --&gt; X[/"401&lt;br/&gt;+ log the real reason"/]
+    ALG -- Yes --&gt; SIG{"Signature valid&lt;br/&gt;with OUR public key?"}
+    SIG -- "No: tampered payload" --&gt; X
+    SIG -- Yes --&gt; ISS{"iss = auth.example.com?"}
+    ISS -- "No: staging, other tenant" --&gt; X
+    ISS -- Yes --&gt; AUD{"aud includes orders-api?"}
+    AUD -- "No: made for another API" --&gt; X
+    AUD -- Yes --&gt; T{"exp, nbf OK&lt;br/&gt;(± 30 s tolerance)?&lt;br/&gt;iat not too old?"}
+    T -- "No: expired, not yet valid" --&gt; X
+    T -- Yes --&gt; F{"iat not in the future?"}
+    F -- No --&gt; X
+    F -- Yes --&gt; TYP{"header.typ = at+jwt?"}
+    TYP -- "No: refresh or ID token" --&gt; X
+    TYP -- Yes --&gt; SUB{"sub present?"}
+    SUB -- No --&gt; X
+    SUB -- Yes --&gt; OK[/"✅ trust the payload,&lt;br/&gt;look up the user by sub"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X error
+    class OK ok
+    class F,TYP,SUB trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The first five checks are done by <code>jwt.verify</code>, but <b>only</b> if you pass <code>algorithms</code>, <code>issuer</code>, <code>audience</code>, <code>clockTolerance</code> and <code>maxAge</code>.</li>
+          <li>The <b>yellow</b> checks aren't in the library: you write them.</li>
+          <li>Every failure goes to the <b>same</b> red box: one generic <code>401</code>, the detail only in the log.</li>
+          <li>Put all of this in <b>one</b> middleware, so no route forgets a check.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul's real token, then three attack tokens, against the orders API.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant R as Rahul's app
+    actor A as Attacker
+    participant API as orders-api
+    participant LOG as Server log
+
+    R-&gt;&gt;API: GET /orders (RS256, iss auth, aud orders-api, typ at+jwt, sub u_rahul)
+    API--&gt;&gt;R: 200 orders of u_rahul
+    A-&gt;&gt;API: GET /orders (alg none, sub u_admin, no signature)
+    API-&gt;&gt;LOG: rejected: jwt signature is required
+    API--&gt;&gt;A: 401 Invalid access token
+    A-&gt;&gt;API: GET /orders (HS256 signed with our public key, sub u_admin)
+    API-&gt;&gt;LOG: rejected: invalid algorithm
+    API--&gt;&gt;A: 401 Invalid access token
+    A-&gt;&gt;API: GET /orders (real RS256 token, but aud reports-api)
+    API-&gt;&gt;LOG: rejected: jwt audience invalid
+    API--&gt;&gt;A: 401 Invalid access token
+    Note over A,API: the attacker always sees the same message, and learns nothing about which check failed
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: a token that passes every check.</li>
+          <li>Steps 3–5: <code>alg: none</code> has no signature. Pinning <code>algorithms</code> rejects it.</li>
+          <li>Steps 6–8: algorithm confusion. The public key is public, so anyone can make this token. Pinning RS256 rejects it.</li>
+          <li>Steps 9–11: a <b>genuine</b> token, correctly signed, but made for another API. Only the <code>aud</code> check stops it.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="anatomy">
+      <h2>3. What gets checked</h2>
+      <p class="lead">The header and the payload both carry things you must check. The signature only proves nobody changed them.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>jwt.verify does it (when you pass the option)</span>
+        <span class="chip"><i class="trap"></i>You check it yourself</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    H(["Header"]) --&gt; H1[/"alg: RS256&lt;br/&gt;option: algorithms"/]
+    H --&gt; H2[/"typ: at+jwt&lt;br/&gt;your own check"/]
+    H --&gt; H3["kid: which key,&lt;br/&gt;from YOUR issuer's JWKS only"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class H1 ok
+    class H2 trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    P(["Payload"]) --&gt; P1[/"iss, aud&lt;br/&gt;options: issuer, audience"/]
+    P --&gt; P2[/"exp, nbf, iat age&lt;br/&gt;options: clockTolerance, maxAge"/]
+    P --&gt; P3[/"iat not in the future,&lt;br/&gt;sub present, other claims you use&lt;br/&gt;your own checks"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class P1,P2 ok
+    class P3 trap
+</pre></div>
+      </div>
+      <p class="tip"><code>jwt.decode</code> checks <b>nothing</b>. On the server, always <code>jwt.verify</code> with every option, plus your own checks, in one shared middleware.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
