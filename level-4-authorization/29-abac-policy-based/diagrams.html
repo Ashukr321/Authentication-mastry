@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>29. ABAC / Policy-Based Authorization: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 4 · TOPIC 29</div>
+    <h1>ABAC / Policy-Based Authorization: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">ABAC notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#parts">3. The parts</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">One refund request: load the order, collect the attributes, then let <code>decide()</code> answer.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Allowed</span>
+        <span class="chip"><i class="error"></i>401 / 403</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /orders/ord_1/refund&lt;br/&gt;Bearer Priya's token"]) --&gt; AU{"Logged in?"}
+    AU -- No --&gt; U[/"401 Please log in"/]
+    AU -- Yes --&gt; LD["Load the order FIRST&lt;br/&gt;(404 if it doesn't exist)"]
+    LD --&gt; AT["Collect attributes from the SERVER&lt;br/&gt;subject: support, Mumbai, limit 5000&lt;br/&gt;resource: Mumbai, 240, no legal hold&lt;br/&gt;action: order:refund&lt;br/&gt;env: hour 11 (server clock)"]
+    AT --&gt; D{"Any matching&lt;br/&gt;DENY policy?"}
+    D -- "Yes: legal hold" --&gt; F[/"403&lt;br/&gt;+ log: denied by no-refund-on-legal-hold"/]
+    D -- No --&gt; AL{"Any matching&lt;br/&gt;ALLOW policy?"}
+    AL -- "No: other city, over limit,&lt;br/&gt;after 6 pm, not support" --&gt; F2[/"403&lt;br/&gt;+ log: default deny"/]
+    AL -- Yes --&gt; OK[/"✅ refund runs&lt;br/&gt;+ log: allowed by policy id"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class U,F,F2 error
+    class OK ok
+    class LD,AT trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>ABAC needs the <b>resource's</b> attributes, so the order is loaded <b>before</b> deciding.</li>
+          <li>Every attribute comes from the server: the database for user and order, the server clock for the hour. Never from the request body.</li>
+          <li><b>Deny is checked first</b>: one matching deny beats any number of allows.</li>
+          <li>If nothing allows it, the answer is <b>no</b> (default deny).</li>
+          <li>Each decision is logged with the <b>policy id</b> that made it.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Different people, different orders, different times: the same <code>decide()</code> gives different answers.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor P as Priya (support, Mumbai, limit 5000)
+    actor AR as Arjun (support, Delhi)
+    actor A as Amit (manager)
+    participant API as Shop API (PEP)
+    participant PDP as decide() (PDP)
+
+    P-&gt;&gt;API: refund ord_2 (Delhi, 180) at 11:00
+    API-&gt;&gt;PDP: subject Mumbai, resource Delhi
+    PDP--&gt;&gt;API: deny (no policy allows it)
+    API--&gt;&gt;P: 403
+    AR-&gt;&gt;API: refund ord_2 (Delhi, 180) at 11:00
+    API-&gt;&gt;PDP: subject Delhi, resource Delhi, 180 under 5000, office hours
+    PDP--&gt;&gt;API: allow (support-refunds-small-own-region-office-hours)
+    API--&gt;&gt;AR: 200 refunded
+    P-&gt;&gt;API: refund ord_3 (Mumbai, 12000) at 11:00
+    PDP--&gt;&gt;API: deny (12000 is over her limit)
+    API--&gt;&gt;P: 403
+    A-&gt;&gt;API: refund ord_3 (Mumbai, 12000) at 11:00
+    PDP--&gt;&gt;API: allow (manager-refunds-office-hours)
+    API--&gt;&gt;A: 200 refunded
+    A-&gt;&gt;API: refund ord_4 (legal hold) at 11:00
+    PDP--&gt;&gt;API: manager rule matches, but no-refund-on-legal-hold also matches
+    API--&gt;&gt;A: 403 (deny overrides allow)
+    P-&gt;&gt;API: refund ord_1 (Mumbai, 240) at 22:00
+    PDP--&gt;&gt;API: deny (outside 9 to 18)
+    API--&gt;&gt;P: 403
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–8: same role, same order, different <b>region</b> attribute. Priya is refused, Arjun is allowed.</li>
+          <li>Steps 9–14: the <b>amount</b> attribute. Over ₹5,000 needs a manager.</li>
+          <li>Steps 15–17: even the manager's allow loses to the <b>legal hold</b> deny.</li>
+          <li>Steps 18–20: the <b>environment</b> attribute. The same refund that works at 11:00 fails at 22:00.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="parts">
+      <h2>3. The parts</h2>
+      <p class="lead">The standard names for the pieces of a policy system, and which code in the demo plays each part.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Makes the decision</span>
+        <span class="chip"><i class="trap"></i>Supplies facts or rules</span>
+      </div>
+      <div class="diagram"><pre class="mermaid">
+flowchart LR
+    C(["Client request"]) --&gt; PEP["PEP: enforcement point&lt;br/&gt;authorize() in each route"]
+    PEP -- "may Priya do order:refund on ord_1?" --&gt; PDP["PDP: decision point&lt;br/&gt;decide()"]
+    PIP["PIP: information point&lt;br/&gt;users and orders tables, server clock"] -- attributes --&gt; PDP
+    PAP["PAP: administration point&lt;br/&gt;the POLICIES list, reviewed like code"] -- policies --&gt; PDP
+    PDP -- "allow or deny + policy id" --&gt; PEP
+    PEP --&gt; R{"allowed?"}
+    R -- Yes --&gt; H["route handler runs"]
+    R -- No --&gt; X["403"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class PDP ok
+    class PIP,PAP trap
+    class X error
+</pre></div>
+      <p class="tip">In bigger systems the PDP is a separate service such as <b>OPA</b> or <b>AWS Cedar</b>, and the PAP is a Git repo of policy files. The shape stays the same: the app asks, the PDP answers, the app obeys.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
