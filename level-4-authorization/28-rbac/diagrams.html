@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>28. Role-Based Access Control (RBAC): Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 4 · TOPIC 28</div>
+    <h1>Role-Based Access Control (RBAC): Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">RBAC notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#model">3. The model</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every protected request asks two questions, in this order: who are you, and are you allowed?</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Route runs</span>
+        <span class="chip"><i class="error"></i>401 / 403</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /admin/orders/ord_1/refund&lt;br/&gt;Authorization: Bearer token"]) --&gt; T{"requireAuth:&lt;br/&gt;token valid?"}
+    T -- "No: missing, expired" --&gt; U[/"401 Please log in"/]
+    T -- Yes --&gt; L["Load the user FRESH from the database&lt;br/&gt;(roles too, never from the request)"]
+    L --&gt; P["requirePermission orders:refund&lt;br/&gt;permissions = union of the user's roles"]
+    P --&gt; H{"has orders:refund?"}
+    H -- "No: customer, editor" --&gt; F[/"403 You don't have permission&lt;br/&gt;+ log who was denied"/]
+    H -- "Yes: support, admin" --&gt; OK[/"✅ refund runs&lt;br/&gt;+ audit log"/]
+    OK --&gt; O["Next check, if the route needs it:&lt;br/&gt;is this row yours? (topic 31)"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class U,F error
+    class OK ok
+    class L,O trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>401</b> means "I don't know who you are". <b>403</b> means "I know you, and no".</li>
+          <li>Roles are loaded from <b>your</b> database on every request, so a role change works at once. Never read them from the body or a header.</li>
+          <li>The route asks for a <b>permission</b>, not a role name. Any role that bundles <code>orders:refund</code> passes.</li>
+          <li>RBAC checks the <b>action</b>. Whether the row belongs to you is a separate check (topic 31).</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Three users with the same kind of token hit the same routes, then Amit changes Rahul's roles.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul (customer)
+    actor P as Priya (support)
+    actor A as Amit (admin)
+    participant API as Shop API
+    participant DB as Database
+
+    R-&gt;&gt;API: POST /admin/orders/ord_1/refund (Bearer Rahul's token)
+    API-&gt;&gt;DB: user u_rahul has roles?
+    DB--&gt;&gt;API: [customer] gives products:read
+    API--&gt;&gt;R: 403 You don't have permission to do this
+    P-&gt;&gt;API: POST /admin/orders/ord_1/refund (Bearer Priya's token)
+    API-&gt;&gt;DB: user u_priya has roles?
+    DB--&gt;&gt;API: [support] gives orders:refund
+    API--&gt;&gt;P: 200 status refunded
+    P-&gt;&gt;API: PUT /admin/users/u_rahul/roles {"roles":["admin"]}
+    API--&gt;&gt;P: 403 (support has no users:manage)
+    A-&gt;&gt;API: PUT /admin/users/u_rahul/roles {"roles":["customer","editor"]}
+    API-&gt;&gt;DB: save roles of u_rahul
+    API--&gt;&gt;A: 200 permissions products:read, products:write
+    R-&gt;&gt;API: POST /products {"name":"Ginger chai","price":260} (same old token)
+    API-&gt;&gt;DB: user u_rahul has roles?
+    DB--&gt;&gt;API: [customer, editor] gives products:write
+    API--&gt;&gt;R: 201 product created
+    Note over R,API: no re-login needed, because roles are read from the database, not from the token
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: Rahul is logged in (no 401) but a customer can't refund: <b>403</b>.</li>
+          <li>Steps 5–8: the same call from Priya works, because her role bundles <code>orders:refund</code>.</li>
+          <li>Steps 9–10: support can refund but can't hand out roles. Only <code>users:manage</code> can.</li>
+          <li>Steps 11–17: Amit adds the <code>editor</code> role. Rahul's very next request with the <b>same token</b> can add products. If roles lived inside a JWT, he would have to wait for a new token.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="model">
+      <h2>3. The model</h2>
+      <p class="lead">Users get roles, roles get permissions. Code only ever looks at the permissions on the right.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Permission (what routes check)</span>
+        <span class="chip"><i class="trap"></i>Role (a job title, a bundle)</span>
+      </div>
+      <div class="diagram"><pre class="mermaid">
+flowchart LR
+    Rahul(["Rahul"]) --&gt; customer
+    Priya(["Priya"]) --&gt; support
+    Neha(["Neha"]) --&gt; editor
+    Amit(["Amit"]) --&gt; admin
+
+    customer --&gt; PR["products:read"]
+    support --&gt; PR
+    support --&gt; ORA["orders:read_all"]
+    support --&gt; REF["orders:refund"]
+    editor --&gt; PR
+    editor --&gt; PW["products:write"]
+    admin --&gt; PR
+    admin --&gt; PW
+    admin --&gt; ORA
+    admin --&gt; REF
+    admin --&gt; UM["users:manage"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class PR,PW,ORA,REF,UM ok
+    class customer,support,editor,admin trap
+</pre></div>
+      <p class="tip">In a database this is five tables: <code>users</code>, <code>roles</code>, <code>permissions</code>, <code>user_roles</code> and <code>role_permissions</code>. A new role like <code>finance</code> is new rows, not new code in every route.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
