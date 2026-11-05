@@ -1,0 +1,10 @@
+{
+  "name": "34-oauth2-grant-types-pkce",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>34. OAuth 2.0 Grant Types &amp; PKCE: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 34</div>
+    <h1>OAuth 2.0 Grant Types &amp; PKCE: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">grant types and PKCE notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow: PKCE</a>
+    <a href="#device">3. Data flow: device code</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Pick the grant from who the client is, then see the PKCE check the token endpoint makes.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Use this</span>
+        <span class="chip"><i class="error"></i>Removed / refused</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    Q(["Which grant type?"]) --&gt; U{"Is a USER&lt;br/&gt;involved?"}
+    U -- "No: a job or service" --&gt; CC[/"client_credentials&lt;br/&gt;confidential client only"/]
+    U -- Yes --&gt; K{"Does the device have&lt;br/&gt;a good browser?"}
+    K -- "No: TV, CLI, console" --&gt; DC[/"device_code&lt;br/&gt;approve on the phone"/]
+    K -- Yes --&gt; S{"Can the app keep&lt;br/&gt;a secret?"}
+    S -- "Yes: web app with a backend" --&gt; ACW[/"authorization_code&lt;br/&gt;+ PKCE + client secret"/]
+    S -- "No: SPA, mobile, desktop" --&gt; ACP[/"authorization_code&lt;br/&gt;+ PKCE (no secret)"/]
+    ACW --&gt; RT["refresh_token, rotated"]
+    ACP --&gt; RT
+    DC --&gt; RT
+    S -. "old advice" .-&gt; IMP[/"implicit: REMOVED"/]
+    U -. "own login form" .-&gt; PW[/"password grant: REMOVED"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class CC,DC,ACW,ACP ok
+    class IMP,PW error
+    class S trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    T(["POST /token&lt;br/&gt;grant_type=authorization_code"]) --&gt; CL{"Client OK?&lt;br/&gt;confidential: secret&lt;br/&gt;public: client_id only"}
+    CL -- No --&gt; E1[/"401 invalid_client"/]
+    CL -- Yes --&gt; CO{"code: this client, unused,&lt;br/&gt;not expired, same redirect_uri?"}
+    CO -- No --&gt; E2[/"400 invalid_grant"/]
+    CO -- Yes --&gt; V{"code_verifier present,&lt;br/&gt;43 to 128 chars?"}
+    V -- No --&gt; E2
+    V -- Yes --&gt; H{"BASE64URL(SHA256(verifier))&lt;br/&gt;== saved code_challenge?"}
+    H -- No --&gt; B[/"400 invalid_grant&lt;br/&gt;+ burn the code"/]
+    H -- Yes --&gt; OK[/"✅ access_token&lt;br/&gt;+ refresh_token"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class OK ok
+    class E1,E2,B error
+    class H trap
+</pre></div>
+      </div>
+      <p class="tip">Left: three questions pick the grant. Right: the extra check PKCE adds at <code>/token</code>. The yellow boxes are where people go wrong: putting a secret in a public app, and computing the challenge with the wrong encoding.</p>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow: PKCE</h2>
+      <p class="lead">A malicious app on Rahul's phone grabs the code on its way back. It still can't get a token.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant APP as PrintKaro mobile app
+    participant B as Phone browser
+    participant AS as Authorization server
+    actor EVIL as Malicious app on the same phone
+
+    APP-&gt;&gt;APP: verifier = 64 random chars (kept in memory)
+    APP-&gt;&gt;APP: challenge = BASE64URL(SHA256(verifier)) = KJPhqd...
+    APP-&gt;&gt;B: open /authorize?client_id=printkaro-mobile, code_challenge=KJPhqd..., method S256
+    B-&gt;&gt;AS: GET /authorize (Rahul is logged in)
+    AS-&gt;&gt;AS: save challenge KJPhqd... with the new code
+    AS--&gt;&gt;B: 302 to printkaro callback?code=_i9SAs...&amp;state=s1
+    B--&gt;&gt;EVIL: the same callback scheme is claimed by EVIL, it gets the code
+    EVIL-&gt;&gt;AS: POST /token code=_i9SAs..., no verifier
+    AS--&gt;&gt;EVIL: 400 code_verifier is missing
+    EVIL-&gt;&gt;AS: POST /token code=_i9SAs..., verifier = a guess
+    AS-&gt;&gt;AS: hash of the guess is not KJPhqd..., burn the code
+    AS--&gt;&gt;EVIL: 400 PKCE verification failed
+    Note over APP,AS: the real app simply starts a new login, with a NEW verifier
+    APP-&gt;&gt;AS: POST /token new code + the real verifier
+    AS--&gt;&gt;APP: 200 access_token + refresh_token
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–3: only the <b>hash</b> leaves the app. The verifier never travels until the token request.</li>
+          <li>Steps 4–7: the code goes back through the phone's browser and OS, where another app can grab it.</li>
+          <li>Steps 8–12: without the verifier the code is useless, and a wrong guess burns it.</li>
+          <li>Steps 13–14: the real app has the verifier, so it gets the tokens.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="device">
+      <h2>3. Data flow: device code</h2>
+      <p class="lead">The PhotoVault TV app has no keyboard. Rahul approves it on his phone while the TV waits.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant TV as PhotoVault TV app
+    participant AS as Authorization server
+    actor P as Rahul's phone
+
+    TV-&gt;&gt;AS: POST /device_authorization client_id=photovault-tv, scope=photos.read
+    AS--&gt;&gt;TV: device_code (secret), user_code PPSM-JNQW, verification_uri, interval 5
+    TV-&gt;&gt;TV: show "Open localhost:3000/device and enter PPSM-JNQW" (and a QR code)
+    TV-&gt;&gt;AS: POST /token grant_type=device_code
+    AS--&gt;&gt;TV: authorization_pending
+    TV-&gt;&gt;AS: POST /token again, too soon
+    AS--&gt;&gt;TV: slow_down (interval is now 10 s)
+    P-&gt;&gt;AS: log in, enter ppsm-jnqw, Allow
+    AS--&gt;&gt;P: Done! Your TV is now connected
+    TV-&gt;&gt;AS: POST /token after 10 s
+    AS--&gt;&gt;TV: access_token + refresh_token for u_rahul
+    TV-&gt;&gt;AS: POST /token once more
+    AS--&gt;&gt;TV: invalid_grant (the device_code worked once)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–3: the TV gets two codes. The long <code>device_code</code> stays secret on the TV; the short <code>user_code</code> is shown to the human.</li>
+          <li>Steps 4–7: the TV polls, and must respect <code>interval</code> and <code>slow_down</code>.</li>
+          <li>Steps 8–9: Rahul approves on a device with a real browser. The TV never sees his password.</li>
+          <li>Steps 10–13: the next poll returns tokens, once.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
