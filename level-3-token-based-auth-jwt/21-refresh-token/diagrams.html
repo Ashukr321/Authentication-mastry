@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>21. Refresh Token: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 21</div>
+    <h1>Refresh Token: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">refresh token notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#tokens">3. Access vs refresh</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server checks on <b>POST /auth/refresh</b> before handing out a new access token</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>New access token</span>
+        <span class="chip"><i class="error"></i>401: log in again</span>
+        <span class="chip"><i class="trap"></i>The one place the server can say "no"</span>
+        <span class="chip"><i class="db"></i>Refresh token store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /auth/refresh&lt;br/&gt;Cookie: refreshToken=e5bf…"]) --&gt; O{"Origin is our site&lt;br/&gt;(or no Origin)?"}
+    O -- No --&gt; X[/"403 blocked&lt;br/&gt;request from another site"/]
+    O -- Yes --&gt; C{"Cookie present,&lt;br/&gt;64 hex chars?"}
+    C -- No --&gt; NO1[/"401 Missing refresh token"/]
+    C -- Yes --&gt; D[("Find row by&lt;br/&gt;sha256(refreshToken)")]
+    D --&gt; F{"Found and&lt;br/&gt;not expired?"}
+    F -- No --&gt; NO2[/"401 invalid or expired&lt;br/&gt;delete row, clear cookie"/]
+    F -- Yes --&gt; U{"User still exists&lt;br/&gt;and is allowed?"}
+    U -- No --&gt; NO2
+    U -- Yes --&gt; S["Sign a NEW access token&lt;br/&gt;JWT, HS256, exp = now + 15 min"]
+    S --&gt; OK[/"200 accessToken, expiresIn&lt;br/&gt;client retries its request"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X,NO1,NO2 error
+    class OK ok
+    class F,U trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The refresh token arrives in an <b>HttpOnly cookie</b> that is sent only to <code>/auth/*</code>.</li>
+          <li>Only the <b>hash</b> is in the database, so the lookup uses <code>sha256(token)</code>.</li>
+          <li>The <b>yellow</b> checks are why refresh tokens exist: logout, expiry, a banned or deleted user all stop here.</li>
+          <li>The password is <b>not</b> needed. The old access token is <b>not</b> needed either.</li>
+          <li>In this topic the refresh token is reused until it expires. Topic 23 replaces it on every refresh.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul logs in, uses the API, his access token expires, the app refreshes it, and then he logs out.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant B as Rahul's browser
+    participant S as Server
+    participant DB as Database
+
+    B-&gt;&gt;S: POST /auth/login { email, password }
+    S-&gt;&gt;DB: check password (scrypt)
+    S-&gt;&gt;DB: INSERT refresh sha256("e5bf…") → { u_1, +7 days }
+    S--&gt;&gt;B: 200 { accessToken: "eyJ…", expiresIn: 900 } + refreshToken=e5bf… (HttpOnly, Path=/auth)
+    B-&gt;&gt;S: GET /me (Authorization: Bearer eyJ…)
+    Note right of S: verify signature + exp only, no DB
+    S--&gt;&gt;B: 200 { email of u_1 }
+    Note over B,S: 15 minutes later
+    B-&gt;&gt;S: GET /me (Bearer eyJ… expired)
+    S--&gt;&gt;B: 401 { code: "token_expired" }
+    B-&gt;&gt;S: POST /auth/refresh (cookie refreshToken=e5bf…)
+    S-&gt;&gt;DB: find sha256("e5bf…"): not expired, user u_1 exists ✓
+    S--&gt;&gt;B: 200 { accessToken: "eyJ…new" }
+    B-&gt;&gt;S: GET /me (Bearer eyJ…new), retried
+    S--&gt;&gt;B: 200 { email of u_1 }
+    B-&gt;&gt;S: POST /auth/logout (cookie refreshToken=e5bf…)
+    S-&gt;&gt;DB: DELETE refresh sha256("e5bf…")
+    S--&gt;&gt;B: 200 + refreshToken cleared
+    Note over B,S: "eyJ…new" still works until its exp, then refresh fails: 401, log in again
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: the password is checked <b>once</b>. Login returns a <b>pair</b>; only the refresh token's hash is stored.</li>
+          <li>Steps 5–6: normal API calls never touch the database.</li>
+          <li>Steps 7–8: the access token expired, so the API answers <code>token_expired</code>.</li>
+          <li>Steps 9–13: the browser trades the refresh token for a new access token and retries. The user sees nothing.</li>
+          <li>Steps 14–16: logout deletes the refresh token on the server. The last access token dies on its own.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="tokens">
+      <h2>3. Access vs refresh: two tokens, two jobs</h2>
+      <p class="lead">The token sent everywhere is short-lived. The long-lived token goes to one endpoint only.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Used on every API call</span>
+        <span class="chip"><i class="trap"></i>Used only to get a new access token</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["Access token&lt;br/&gt;JWT, topic 20"]) --&gt; B1["Lives 15 minutes,&lt;br/&gt;kept in memory"]
+    B1 --&gt; C1["Sent on every request:&lt;br/&gt;Authorization: Bearer"]
+    C1 --&gt; D1[/"Checked by signature only,&lt;br/&gt;can't be revoked,&lt;br/&gt;just expires"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class D1 ok
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["Refresh token&lt;br/&gt;64 random hex chars"]) --&gt; B2["Lives 7 days,&lt;br/&gt;HttpOnly cookie, Path=/auth"]
+    B2 --&gt; C2["Sent only to&lt;br/&gt;POST /auth/refresh"]
+    C2 --&gt; D2[/"Checked in the database,&lt;br/&gt;revoked by deleting the row"/]
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class D2 trap
+</pre></div>
+      </div>
+      <p class="tip">Password change, password reset, ban and "log out everywhere" delete <b>every</b> refresh token of the user. Within one access token lifetime, they're out on every device.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

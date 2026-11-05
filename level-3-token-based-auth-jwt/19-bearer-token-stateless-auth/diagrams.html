@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>19. Stateless Auth with Bearer Token: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 19</div>
+    <h1>Stateless Auth with Bearer Token: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">bearer token / stateless auth notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#compare">3. Session vs token</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check the server does on a request with <code>Authorization: Bearer …</code>. Notice: <b>no database</b> anywhere.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Allowed</span>
+        <span class="chip"><i class="error"></i>Rejected</span>
+        <span class="chip"><i class="trap"></i>Trap: still works, but maybe it shouldn't</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["GET /me&lt;br/&gt;Authorization: Bearer eyJ..."]) --&gt; H{"Authorization&lt;br/&gt;header present?"}
+    H -- No --&gt; E1[/"401 Missing bearer token&lt;br/&gt;WWW-Authenticate: Bearer"/]
+    H -- Yes --&gt; F{"Looks like&lt;br/&gt;Bearer + one token?"}
+    F -- No --&gt; E2[/"400 invalid_request"/]
+    F -- Yes --&gt; G{"alg is HS256?&lt;br/&gt;(we choose, not the token)"}
+    G -- No --&gt; E3[/"401 invalid_token"/]
+    G -- Yes --&gt; S{"Signature matches&lt;br/&gt;header + payload?"}
+    S -- "No: someone edited it" --&gt; E3
+    S -- Yes --&gt; X{"exp in the future?"}
+    X -- No --&gt; E4[/"401 Token expired&lt;br/&gt;client refreshes or logs in"/]
+    X -- Yes --&gt; I{"iss and aud&lt;br/&gt;are ours?"}
+    I -- No --&gt; E3
+    I -- Yes --&gt; OK[/"200: req.user = claims&lt;br/&gt;sub, email"/]
+    OK -.-&gt; T["Logged out or deleted user?&lt;br/&gt;The token still passes&lt;br/&gt;until exp"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4 error
+    class OK ok
+    class T trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>No header at all is <b>401</b> with a <code>WWW-Authenticate</code> hint. A broken header is the client's bug: <b>400</b>.</li>
+          <li>The <b>server</b> decides the algorithm. Trusting the token's own <code>alg</code> is how the <code>alg: none</code> attack works.</li>
+          <li>The <b>signature</b> check catches any edit to the payload, like changing the email or the role.</li>
+          <li><code>exp</code>, <code>iss</code> and <code>aud</code> stop old tokens and tokens made for another app.</li>
+          <li>Every box is maths in memory. The <b>yellow</b> box is the price: the server can't know the token was "logged out".</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul logs in once, calls the API, an attacker forges a token, Rahul "logs out", and the server restarts.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant R as Rahul's app
+    participant A as Attacker
+    participant S as API server
+    participant DB as Users table
+
+    R-&gt;&gt;S: POST /login { email, password: "rahul password 123" }
+    S-&gt;&gt;DB: find Rahul, verify the scrypt hash ✓
+    S-&gt;&gt;S: jwt.sign({ sub: u_1, email, exp: +15 min, iss, aud }, JWT_SECRET)
+    S--&gt;&gt;R: 200 { access_token: "eyJhbGc...", token_type: "Bearer", expires_in: 900 }
+    Note over S,DB: Nothing saved. No session row, no Redis.
+    R-&gt;&gt;S: GET /me (Authorization: Bearer eyJhbGc...)
+    S-&gt;&gt;S: jwt.verify: signature ✓ exp ✓ iss ✓ aud ✓
+    S--&gt;&gt;R: 200 { id: u_1, email: Rahul's, expiresAt }
+    A-&gt;&gt;S: GET /me (Bearer token with email changed to Priya's)
+    S-&gt;&gt;S: recompute signature: does not match ✗
+    S--&gt;&gt;A: 401 WWW-Authenticate: Bearer error="invalid_token"
+    R-&gt;&gt;S: POST /logout (Authorization: Bearer eyJhbGc...)
+    S--&gt;&gt;R: 200 "Delete the token on your side"
+    R-&gt;&gt;R: accessToken = null
+    Note over R,S: A copy of eyJhbGc... (a leaked log, XSS) still works until exp
+    Note over S,DB: Server restarts. Same JWT_SECRET, users table is empty.
+    A-&gt;&gt;S: GET /me (the old copied token)
+    S-&gt;&gt;S: jwt.verify: signature ✓ exp ✓
+    S--&gt;&gt;A: 200 { id: u_1 } even though u_1 no longer exists
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies, arrows to itself are work done in memory.</li>
+          <li>Steps 1–4: the password is checked <b>once</b>, and the server signs a token instead of saving a session.</li>
+          <li>Steps 5–7: every later request only needs the token and the key. The users table isn't touched.</li>
+          <li>Steps 8–10: editing the payload breaks the signature, so forging fails.</li>
+          <li>Steps 11–13: "logout" only happens on the client. The server has nothing to delete.</li>
+          <li>Steps 14–16: a copied token survives logout, a restart, even a deleted user, until <code>exp</code>. That's why access tokens are short (topic 20) and refresh tokens exist (topic 21).</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="compare">
+      <h2>3. Session vs token</h2>
+      <p class="lead">Where does "Rahul is logged in" live? With sessions, on the <b>server</b>. With bearer tokens, inside the <b>token</b> the client carries.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Works on its own</span>
+        <span class="chip"><i class="trap"></i>Shared thing every server needs</span>
+        <span class="chip"><i class="db"></i>Store / key</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    B1(["Browser&lt;br/&gt;Cookie: sid=9c1e..."]) --&gt; LB1["Load balancer"]
+    LB1 --&gt; SA["Server A"]
+    LB1 --&gt; SB["Server B"]
+    SA --&gt; R[("Shared session store&lt;br/&gt;9c1e... = Rahul")]
+    SB --&gt; R
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class R trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    B2(["App&lt;br/&gt;Authorization: Bearer eyJ..."]) --&gt; LB2["Load balancer"]
+    LB2 --&gt; TA["Server A&lt;br/&gt;verifies with the key"]
+    LB2 --&gt; TB["Server B&lt;br/&gt;verifies with the key"]
+    K[("JWT key&lt;br/&gt;env variable,&lt;br/&gt;copied at deploy")] -.-&gt; TA
+    K -.-&gt; TB
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class TA,TB ok
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Left (topic 09):</b> the cookie is just a ticket number. Every request, every server must ask the <b>shared store</b> who it belongs to.</li>
+          <li><b>Right (this topic):</b> the token already says who you are. Each server checks the signature <b>by itself</b>, with no call to anyone.</li>
+          <li>The dotted lines are not requests: the key is given to each server once, when it starts.</li>
+          <li>With <b>RS256 / ES256</b> (topic 18) the servers get only the <b>public</b> key, so they can verify tokens but never create them.</li>
+        </ol>
+      </aside>
+      <p class="tip">The left side can log someone out instantly (delete the row). The right side can't, so real apps combine them: a <b>short</b> stateless access token plus a <b>stored</b> refresh token (topics 20–24).</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

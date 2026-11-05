@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>20. Access Token: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 20</div>
+    <h1>Access Token: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">access token notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#compare">3. Session vs access token</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check the API does on a request that carries an access token</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Allowed</span>
+        <span class="chip"><i class="error"></i>Rejected</span>
+        <span class="chip"><i class="trap"></i>Normal: refresh and retry</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["GET /admin/stats&lt;br/&gt;Authorization: Bearer eyJ..."]) --&gt; H{"Header is&lt;br/&gt;Bearer + token?"}
+    H -- No --&gt; E1[/"401 Missing access token"/]
+    H -- Yes --&gt; S{"Signature valid with&lt;br/&gt;our secret, alg = HS256?"}
+    S -- "No: edited, forged, alg none" --&gt; E2[/"401 invalid_token"/]
+    S -- Yes --&gt; X{"exp still in the future?&lt;br/&gt;(5 s clock tolerance)"}
+    X -- No --&gt; E3[/"401 token expired&lt;br/&gt;client uses refresh token"/]
+    X -- Yes --&gt; I{"iss = auth.example.com&lt;br/&gt;aud = api.example.com?"}
+    I -- No --&gt; E4[/"401 invalid_token"/]
+    I -- Yes --&gt; R{"role in the token&lt;br/&gt;= admin?"}
+    R -- No --&gt; E5[/"403 Requires role: admin"/]
+    R -- Yes --&gt; OK[/"200 OK&lt;br/&gt;no database lookup needed"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E4,E5 error
+    class OK ok
+    class E3 trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The token must come in the <b>Authorization</b> header, never the URL.</li>
+          <li>The <b>signature</b> check catches every edited or forged token. The algorithm is <b>pinned</b>, so the token can't choose it.</li>
+          <li>An <b>expired</b> token is normal (yellow): the client gets a new one with its refresh token.</li>
+          <li>Everything up to here is <b>authentication</b> (who are you?) and fails with <b>401</b>.</li>
+          <li>The role check is <b>authorization</b> (may you?) and fails with <b>403</b>.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul logs in, uses his token, hits an admin route, then his token expires</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant C as Rahul's app
+    participant A as API server
+    participant DB as Database
+
+    C-&gt;&gt;A: POST /login { email, password: "rahul password 123" }
+    A-&gt;&gt;DB: find user, verify scrypt hash ✓
+    A-&gt;&gt;A: jwt.sign({ sub: "7acb…", role: "user", iss, aud, exp: now + 15 min }, secret)
+    A--&gt;&gt;C: 200 { access_token: "eyJhbGci…", token_type: "Bearer", expires_in: 900 }
+    C-&gt;&gt;A: GET /me (Authorization: Bearer eyJhbGci…)
+    A-&gt;&gt;A: jwt.verify(token, secret, { algorithms: [HS256], iss, aud }) ✓
+    A-&gt;&gt;DB: load user 7acb… (only because /me shows profile data)
+    A--&gt;&gt;C: 200 { id: "7acb…", role: "user", tokenExpiresAt }
+    C-&gt;&gt;A: GET /admin/stats (Authorization: Bearer eyJhbGci…)
+    A-&gt;&gt;A: verify ✓, but role = "user"
+    A--&gt;&gt;C: 403 { error: "Requires role: admin" }
+    Note over C,DB: 15 minutes pass
+    C-&gt;&gt;A: GET /me (same token)
+    A-&gt;&gt;A: verify: exp is in the past ✗
+    A--&gt;&gt;C: 401 WWW-Authenticate: Bearer error="invalid_token" (expired)
+    Note over C,A: The app now calls /refresh with its refresh token (topics 21-22)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: the password is checked <b>once</b>, then the server signs a token and sends it back.</li>
+          <li>Steps 5–8: the token is <b>verified</b> on the API itself, no session table.</li>
+          <li>Steps 9–11: a valid token with the wrong role gets <b>403</b>, not 401.</li>
+          <li>Steps 12–14: after <b>exp</b>, the same token gets <b>401</b> with a reason in the header.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="compare">
+      <h2>3. Session vs access token</h2>
+      <p class="lead">Where each one looks for the answer to "who is this?"</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Answer found</span>
+        <span class="chip"><i class="trap"></i>The cost</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Session id (topic 09)&lt;br/&gt;Cookie: sid=9c1e..."]) --&gt; B["Random string,&lt;br/&gt;means nothing by itself"]
+    B --&gt; C[("Look it up in the&lt;br/&gt;sessions table")]
+    C --&gt; D[/"userId = 7acb..."/]
+    D --&gt; E["Logout = delete the row&lt;br/&gt;dead at once"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class D ok
+    class C trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Access token&lt;br/&gt;Authorization: Bearer eyJ..."]) --&gt; B["Payload says:&lt;br/&gt;sub 7acb..., role user, exp 10:15"]
+    B --&gt; C["Check the signature&lt;br/&gt;with the secret (no lookup)"]
+    C --&gt; D[/"userId = 7acb..."/]
+    D --&gt; E["Logout = can't delete it&lt;br/&gt;works until exp"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class D ok
+    class E trap
+</pre></div>
+      </div>
+      <p class="tip">A session costs a <b>database lookup</b> on every request but can be killed at once. An access token costs <b>nothing to check</b> but can't be killed, which is why it lives only <b>5–15 minutes</b> and a refresh token (topic 21) keeps the user logged in.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

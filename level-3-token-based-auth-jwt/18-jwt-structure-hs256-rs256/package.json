@@ -1,0 +1,11 @@
+{
+  "name": "18-jwt-structure-hs256-rs256",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "jsonwebtoken": "^9.0.3"
+  }
+}

@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>18. JWT Structure, HS256 vs RS256/ES256: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 18</div>
+    <h1>JWT Structure, HS256 vs RS256/ES256: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">JWT structure notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#keys">3. HS256 vs RS256/ES256</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check the server does before it trusts a token</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Trusted</span>
+        <span class="chip"><i class="error"></i>Rejected: 401 Invalid token</span>
+        <span class="chip"><i class="trap"></i>The step that stops alg:none and alg confusion</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Token arrives&lt;br/&gt;header.payload.signature"]) --&gt; B{"Three parts that&lt;br/&gt;decode to JSON?"}
+    B -- No --&gt; E1[/"401 jwt malformed"/]
+    B -- Yes --&gt; C{"header.kid is one&lt;br/&gt;of OUR keys?"}
+    C -- No --&gt; E2[/"401 unknown key id"/]
+    C -- Yes --&gt; D["Allowed alg = the KEY's alg&lt;br/&gt;(never the header's)"]
+    D --&gt; F{"header.alg =&lt;br/&gt;allowed alg?"}
+    F -- "No: none, or HS256 on an RSA key" --&gt; E3[/"401 invalid algorithm /&lt;br/&gt;signature is required"/]
+    F -- Yes --&gt; G{"Signature matches&lt;br/&gt;header.payload?"}
+    G -- "No: payload was changed" --&gt; E4[/"401 invalid signature"/]
+    G -- Yes --&gt; H{"exp in the future,&lt;br/&gt;iss and aud ours?"}
+    H -- No --&gt; E5[/"401 expired / wrong&lt;br/&gt;issuer or audience"/]
+    H -- Yes --&gt; OK[/"Trust the payload&lt;br/&gt;sub: u_1, role: user"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4,E5 error
+    class OK ok
+    class D trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Reading the header is only used to <b>find</b> the key by its <code>kid</code>.</li>
+          <li>The <b>yellow</b> box: the key decides the algorithm. The attacker wrote the header, so its <code>alg</code> can't be trusted.</li>
+          <li>The signature covers the exact text <code>header.payload</code>: one changed character and it fails.</li>
+          <li>Only then are the claims checked (<code>exp</code>, <code>iss</code>, <code>aud</code>, more in topic 27).</li>
+          <li>Every failure gives the client the same <b>401 Invalid token</b>.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The server makes an HS256 token for Rahul. Then Priya tries to edit it, and tries an unsigned one.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul
+    actor P as Priya (attacker)
+    participant S as Server (secret hs-1)
+
+    R-&gt;&gt;S: POST /tokens { alg: "HS256" }
+    Note over S: header = {"alg":"HS256","kid":"hs-1"}
+    Note over S: payload = {"sub":"u_1","role":"user","exp":…}
+    Note over S: signature = HMAC-SHA256("eyJhbGci….eyJuYW1l…", secret)
+    S--&gt;&gt;R: 201 eyJhbGci….eyJuYW1l….bYXog8QL…
+    R-&gt;&gt;S: POST /verify (the same token)
+    S--&gt;&gt;R: 200 { valid: true, payload: { sub: "u_1", role: "user" } }
+    Note over P: Priya decodes the payload: no key needed
+    P-&gt;&gt;S: POST /verify (header . payload with role admin . OLD signature)
+    S-&gt;&gt;S: HMAC of the new text ≠ bYXog8QL…
+    S--&gt;&gt;P: 401 invalid signature
+    P-&gt;&gt;S: POST /verify ({"alg":"none","kid":"hs-1"} . payload . empty)
+    S-&gt;&gt;S: key hs-1 allows only HS256
+    S--&gt;&gt;P: 401 jwt signature is required
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one actor. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: the signature is an HMAC over <code>header.payload</code> with the server's secret.</li>
+          <li>Steps 3–4: verifying the untouched token works, with no database lookup.</li>
+          <li>Steps 5–7: Priya can <b>read</b> the payload, but changing it breaks the signature.</li>
+          <li>Steps 8–10: an unsigned <code>alg: none</code> token fails because the key's algorithm is pinned.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="keys">
+      <h2>3. HS256 vs RS256/ES256: who can sign, who can verify</h2>
+      <p class="lead">With HS256, every verifier could also make tokens. With RS256/ES256, verifiers only get the public key.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Can only verify</span>
+        <span class="chip"><i class="trap"></i>Can verify AND make tokens</span>
+        <span class="chip"><i class="error"></i>Never leaves the auth server</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    K1(["HS256&lt;br/&gt;one shared secret"]) --&gt; A1["Auth server&lt;br/&gt;signs with the secret"]
+    K1 --&gt; B1["Orders service&lt;br/&gt;verifies with the SAME secret"]
+    K1 --&gt; C1["Payments service&lt;br/&gt;verifies with the SAME secret"]
+    B1 --&gt; X1[/"Orders is hacked →&lt;br/&gt;attacker can MAKE&lt;br/&gt;admin tokens"/]
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class A1,B1,C1 trap
+    class X1 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    K2(["RS256 / ES256&lt;br/&gt;a key pair"]) --&gt; PK["Private key&lt;br/&gt;only on the auth server"]
+    K2 --&gt; J["Public key, published&lt;br/&gt;/.well-known/jwks.json"]
+    PK --&gt; A2["Auth server&lt;br/&gt;signs tokens"]
+    J --&gt; B2["Orders service&lt;br/&gt;verifies only"]
+    J --&gt; C2["Payments service&lt;br/&gt;verifies only"]
+    B2 --&gt; X2[/"Orders is hacked →&lt;br/&gt;attacker still can't&lt;br/&gt;make tokens"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class PK error
+    class A2 trap
+    class B2,C2,X2 ok
+</pre></div>
+      </div>
+      <p class="tip">Sizes from our demo: HS256 signature 32 bytes (token 263 chars), RS256 256 bytes (562 chars), ES256 64 bytes (306 chars). ES256 gives RS256's benefits with much smaller tokens.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
