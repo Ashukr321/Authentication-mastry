@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>23. Refresh Token Rotation &amp; Reuse Detection: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 23</div>
+    <h1>Refresh Token Rotation &amp; Reuse Detection: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">rotation and reuse detection notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#family">3. Token family</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What <b>POST /auth/refresh</b> does with the token it receives</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Rotated: new tokens</span>
+        <span class="chip"><i class="error"></i>401: log in again</span>
+        <span class="chip"><i class="trap"></i>Used token came back: theft alarm</span>
+        <span class="chip"><i class="db"></i>Refresh token store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /auth/refresh&lt;br/&gt;Cookie: refreshToken=RT"]) --&gt; D[("Find row by sha256(RT)")]
+    D --&gt; F{"Found, not expired,&lt;br/&gt;user exists?"}
+    F -- No --&gt; NO[/"401 invalid or expired&lt;br/&gt;clear cookie"/]
+    F -- Yes --&gt; U{"usedAt set?&lt;br/&gt;(already exchanged once)"}
+    U -- "Yes: REUSE" --&gt; T["🚨 Revoke the WHOLE family&lt;br/&gt;email the user"]
+    T --&gt; T2[/"401 token_reused"/]
+    U -- No --&gt; M["Mark RT used&lt;br/&gt;(atomic: only if usedAt is still empty)"]
+    M --&gt; N["Issue RT-next:&lt;br/&gt;same family, same end date"]
+    N --&gt; OK[/"200 new access token&lt;br/&gt;+ Set-Cookie RT-next"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class NO,T2 error
+    class OK ok
+    class U,T trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Used tokens are <b>kept</b> (with <code>usedAt</code>), not deleted, so a replay is recognized.</li>
+          <li>The <b>yellow</b> path: a used token means two parties had it. Kill the whole family, because the server can't tell who is who.</li>
+          <li>The green path: every refresh gives a <b>new</b> refresh token. Each one works once.</li>
+          <li>"Mark used" must be <b>atomic</b>, or two parallel requests could both rotate the same token.</li>
+          <li>The new token keeps the family's <b>original</b> end date, so rotation never extends the login.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Priya copies Rahul's laptop token. The laptop keeps rotating, then Priya replays her old copy. Rahul's phone is a separate family.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant L as Rahul's laptop
+    actor P as Priya (copied RT1)
+    participant S as Server
+    participant DB as Database
+
+    L-&gt;&gt;S: POST /auth/login { email, password }
+    S-&gt;&gt;DB: INSERT RT1 { family F1, ends 12 Nov, usedAt: null }
+    S--&gt;&gt;L: 200 + refreshToken=RT1
+    Note over P: Priya copies RT1
+    L-&gt;&gt;S: POST /auth/refresh (RT1)
+    S-&gt;&gt;DB: RT1.usedAt = now, INSERT RT2 { F1, ends 12 Nov }
+    S--&gt;&gt;L: 200 + refreshToken=RT2
+    P-&gt;&gt;S: POST /auth/refresh (RT1)
+    S-&gt;&gt;DB: RT1 already used 🚨
+    S-&gt;&gt;DB: DELETE every token of family F1 (RT1, RT2)
+    S--&gt;&gt;P: 401 token_reused
+    Note right of S: email Rahul about a possibly stolen login
+    L-&gt;&gt;S: POST /auth/refresh (RT2)
+    S--&gt;&gt;L: 401 log in again
+    Note over L,DB: Rahul's phone has family F2: not touched, still logged in
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–3: login starts family F1 with an end date that never moves.</li>
+          <li>Steps 4–6: the laptop refreshes. RT1 is marked used, RT2 replaces it.</li>
+          <li>Steps 7–10: Priya's copy is RT1, already used → the alarm. All of F1 is deleted.</li>
+          <li>Steps 11–12: the laptop is logged out too. If Priya had refreshed <b>first</b>, the laptop's RT1 would have raised the same alarm, and Priya's RT2 would die.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="family">
+      <h2>3. Token family: one login, a chain of one-use tokens</h2>
+      <p class="lead">Normal life on the left. The race that looks like theft on the right.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Current token</span>
+        <span class="chip"><i class="trap"></i>Used: kept only to detect replays</span>
+        <span class="chip"><i class="error"></i>False alarm</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    L1(["Login: family F1&lt;br/&gt;ends in 7 days"]) --&gt; R1["RT1 (used)"]
+    R1 -- refresh --&gt; R2["RT2 (used)"]
+    R2 -- refresh --&gt; R3["RT3 (used)"]
+    R3 -- refresh --&gt; R4[/"RT4: current&lt;br/&gt;same end date as RT1"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class R4 ok
+    class R1,R2,R3 trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["Two tabs, same RT1,&lt;br/&gt;same moment"]) --&gt; B2["Tab A: RT1 → RT2&lt;br/&gt;200"]
+    A2 --&gt; C2["Tab B: RT1 is used now"]
+    C2 --&gt; D2[/"🚨 reuse → family revoked&lt;br/&gt;user logged out for nothing"/]
+    D2 --&gt; E2["Fix: single-flight (topic 22),&lt;br/&gt;one tab refreshes,&lt;br/&gt;or a few seconds of grace"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class D2 error
+</pre></div>
+      </div>
+      <p class="tip">Logout revokes this device's family. Password change, password reset and "log out everywhere" revoke <b>every</b> family of the user.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
