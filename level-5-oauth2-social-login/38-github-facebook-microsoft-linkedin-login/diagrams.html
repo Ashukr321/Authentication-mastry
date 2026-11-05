@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>38. GitHub / Facebook / Microsoft / LinkedIn Login: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 38</div>
+    <h1>GitHub / Facebook / Microsoft / LinkedIn Login: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">social login notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow: nOAuth</a>
+    <a href="#adapters">3. The adapters</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">One login flow, four adapters, one account model.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Refused</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["GET /login/:provider"]) --&gt; P["state always, nonce if OIDC,&lt;br/&gt;PKCE if supported,&lt;br/&gt;remember WHICH provider"]
+    P --&gt; R["redirect to that provider"]
+    R --&gt; CB(["GET /callback/:provider"])
+    CB --&gt; S{"state in this session&lt;br/&gt;AND started for&lt;br/&gt;this provider?"}
+    S -- No --&gt; X1[/"400: CSRF or mix-up"/]
+    S -- Yes --&gt; AD{"which adapter?"}
+    AD -- GitHub --&gt; GH["token (Accept json, 200 can be an error)&lt;br/&gt;GET /user, GET /user/emails"]
+    AD -- Facebook --&gt; FB["token (GET)&lt;br/&gt;GET /me?fields=id,name,email"]
+    AD -- Microsoft --&gt; MS["token + PKCE&lt;br/&gt;verify ID token, iss has the tid"]
+    AD -- LinkedIn --&gt; LI["token&lt;br/&gt;verify ID token"]
+    GH --&gt; N["same shape: provider, providerUserId,&lt;br/&gt;name, email, emailVerified"]
+    FB --&gt; N
+    MS --&gt; N
+    LI --&gt; N
+    MS -. "issuer or tenant not allowed" .-&gt; X2[/"400 login failed"/]
+    N --&gt; K["account key = provider + providerUserId&lt;br/&gt;NOT email, NOT username"]
+    K --&gt; OK[/"✅ new or returning account,&lt;br/&gt;new session id"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X1,X2 error
+    class OK ok
+    class K,GH trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The start and the state check are the <b>same</b> for every provider. The pending login also remembers the provider, which stops mix-up attacks.</li>
+          <li>Only the middle row is provider-specific: each adapter knows its provider's endpoints and quirks.</li>
+          <li>Every adapter returns the same shape, so the rest of the app never asks "which provider?".</li>
+          <li>The yellow box is the rule that matters most: the account key is the provider's <b>permanent id</b>.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow: nOAuth</h2>
+      <p class="lead">Vikram makes his own Microsoft tenant and sets his email to Rahul's. What happens depends on how the app finds accounts.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    participant MS as Microsoft (his own tenant)
+    participant APP as An app
+
+    V-&gt;&gt;MS: create tenant fabrikam, set user email = Rahul's email
+    V-&gt;&gt;APP: Log in with Microsoft
+    APP-&gt;&gt;MS: authorize, then token
+    MS--&gt;&gt;APP: ID token, tid f00dcafe..., oid ...0666, email = Rahul's email (not verified)
+    alt app finds users BY EMAIL
+        APP-&gt;&gt;APP: Rahul's email belongs to Rahul's account
+        APP--&gt;&gt;V: logged in as RAHUL (account takeover)
+    else app finds users by tid + oid (PrintKaro)
+        APP-&gt;&gt;APP: f00dcafe... + ...0666 is a new identity
+        APP--&gt;&gt;V: logged in to his OWN new account acct_TLFzwg
+    else app allow-lists tenants
+        APP-&gt;&gt;APP: tenant f00dcafe... is not allowed
+        APP--&gt;&gt;V: 400 login failed
+    end
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: everything is real and correctly signed. Microsoft is not hacked; the email claim was simply never meant to be an identity.</li>
+          <li>First branch: an app that matches by email hands Vikram Rahul's account.</li>
+          <li>Second branch: keying by <code>tid</code> + <code>oid</code> gives Vikram an account of his own, which is harmless.</li>
+          <li>Third branch: an internal company app should only accept its own tenant id.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="adapters">
+      <h2>3. The adapters</h2>
+      <p class="lead">Which call each adapter makes, and which field becomes the account key.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Permanent id: the key</span>
+        <span class="chip"><i class="error"></i>Changeable: never the key</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    G(["GitHub (OAuth 2.0)"]) --&gt; G1["GET /user"]
+    G1 --&gt; G2["id 583231"]
+    G1 --&gt; G3["login rahul-dev"]
+    G --&gt; G4["GET /user/emails&lt;br/&gt;primary AND verified only"]
+    F(["Facebook (OAuth 2.0)"]) --&gt; F1["GET /me?fields=id,name,email"]
+    F1 --&gt; F2["id 10229384756&lt;br/&gt;(different in every app)"]
+    F1 --&gt; F3["email: may be missing"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class G2,F2 ok
+    class G3,F3 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    M(["Microsoft (OIDC)"]) --&gt; M1["verify ID token&lt;br/&gt;iss = .../tid/v2.0"]
+    M1 --&gt; M2["tid + oid"]
+    M1 --&gt; M3["email, preferred_username"]
+    L(["LinkedIn (OIDC)"]) --&gt; L1["verify ID token&lt;br/&gt;iss = linkedin.com/oauth"]
+    L1 --&gt; L2["sub"]
+    L1 --&gt; L3["email + email_verified"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class M2,L2 ok
+    class M3 error
+</pre></div>
+      </div>
+      <p class="tip">Green fields go into <code>user_identities(provider, provider_user_id)</code> with a unique index. Red ones are profile data: show them, refresh them, but never use them to find or merge accounts.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
