@@ -1,0 +1,10 @@
+{
+  "name": "14-change-password",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

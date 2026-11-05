@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>15. Remember Me: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 2 · TOPIC 15</div>
+    <h1>Remember Me: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">remember me notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#cookies">3. Session vs remember-me</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server does on <b>every request</b> to find out who the user is</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Not logged in / theft</span>
+        <span class="chip"><i class="trap"></i>Rotation: the old secret dies</span>
+        <span class="chip"><i class="db"></i>Token store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Request arrives&lt;br/&gt;Cookie: sid=…, remember=b074….d744…"]) --&gt; S{"Valid session&lt;br/&gt;(sid not expired)?"}
+    S -- Yes --&gt; OK1[/"Logged in&lt;br/&gt;loggedInVia: password"/]
+    S -- No --&gt; R{"remember cookie&lt;br/&gt;shaped selector.validator?"}
+    R -- No --&gt; NO[/"Not logged in&lt;br/&gt;401 on protected pages"/]
+    R -- Yes --&gt; D[("Find row by selector")]
+    D --&gt; F{"Found and&lt;br/&gt;not expired?"}
+    F -- No --&gt; NO
+    F -- Yes --&gt; V{"sha256(validator)&lt;br/&gt;= stored hash?"}
+    V -- "No: an OLD validator" --&gt; T[/"🚨 THEFT&lt;br/&gt;delete ALL sessions + tokens&lt;br/&gt;email the user, 401"/]
+    V -- Yes --&gt; ROT["Rotate: new validator,&lt;br/&gt;same selector, same 30-day limit"]
+    ROT --&gt; NS["New short session&lt;br/&gt;viaRememberMe: true"]
+    NS --&gt; OK2[/"Logged in&lt;br/&gt;loggedInVia: remember-me&lt;br/&gt;(sensitive pages ask for the password)"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class NO,T error
+    class OK1,OK2 ok
+    class ROT trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>session</b> is always checked first. The remember-me cookie only matters when there's no valid session.</li>
+          <li>The <b>selector</b> finds the row. The <b>validator</b> is the secret, compared by its hash.</li>
+          <li>The <b>yellow</b> box: every use gets a new validator, so only one cookie is valid at a time.</li>
+          <li>A known selector with an <b>old</b> validator means the cookie was copied → log out everywhere.</li>
+          <li>A session started by remember-me is marked, so payment and security pages ask for the password again.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul ticks "Remember me". Later his session has ended, and he's logged back in. Then Priya tries a copy of his old cookie.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant B as Rahul's laptop
+    actor A as Priya (copied cookie)
+    participant S as Server
+    participant DB as Database
+
+    B-&gt;&gt;S: POST /login { email, password, rememberMe: true }
+    S-&gt;&gt;DB: INSERT session sha256("db23…") (30 min)
+    S-&gt;&gt;DB: INSERT remember "b074…" → { u_1, sha256("d744…"), +30 days }
+    S--&gt;&gt;B: 200 + sid=db23… (no Max-Age) + remember=b074….d744… (Max-Age 30 days)
+    Note over A: Priya copies remember=b074….d744…
+    Note over B,S: 30 minutes later: the session has expired
+    B-&gt;&gt;S: GET /me (sid=db23…, remember=b074….d744…)
+    S-&gt;&gt;DB: session expired, find remember "b074…", hash matches ✓
+    S-&gt;&gt;DB: UPDATE "b074…" SET validatorHash = sha256("fce0…")
+    S-&gt;&gt;DB: INSERT session sha256("b88f…") { viaRememberMe: true }
+    S--&gt;&gt;B: 200 { loggedInVia: "remember-me" } + remember=b074….fce0… + sid=b88f…
+    B-&gt;&gt;S: GET /payment-methods
+    S--&gt;&gt;B: 403 Please log in with your password again
+    A-&gt;&gt;S: GET /me (remember=b074….d744…)
+    S-&gt;&gt;DB: find "b074…": sha256("d744…") ≠ stored hash 🚨
+    S-&gt;&gt;DB: DELETE all sessions and remember tokens of u_1
+    S--&gt;&gt;A: 401 Your login may have been stolen
+    B-&gt;&gt;S: GET /me (sid=b88f…)
+    S--&gt;&gt;B: 401 Rahul must log in with his password again
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: login creates <b>two</b> things: a short session and a 30-day remember-me token. Only hashes go into the database.</li>
+          <li>Steps 5–9: the session has expired, so the remember-me cookie is used. The validator is <b>replaced</b> (d744 → fce0) and a new session starts.</li>
+          <li>Steps 10–11: a remembered session can't open sensitive pages.</li>
+          <li>Steps 12–15: Priya's copy has the <b>old</b> validator → theft detected → everyone is logged out, Rahul included (steps 16–17).</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="cookies">
+      <h2>3. Session vs remember-me: two cookies, two jobs</h2>
+      <p class="lead">The powerful cookie stays short-lived. The long-lived cookie can only start a new, less-trusted session.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Can do everything</span>
+        <span class="chip"><i class="trap"></i>Limited: sensitive pages ask for the password</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["sid cookie&lt;br/&gt;the session, topic 09"]) --&gt; B1["Lives 30 minutes,&lt;br/&gt;no Max-Age:&lt;br/&gt;gone when the browser closes"]
+    B1 --&gt; C1["Sent on every request,&lt;br/&gt;looked up every time"]
+    C1 --&gt; D1[/"After a password login:&lt;br/&gt;can do everything"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class D1 ok
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["remember cookie&lt;br/&gt;selector.validator"]) --&gt; B2["Lives 30 days,&lt;br/&gt;validator rotates&lt;br/&gt;on every use"]
+    B2 --&gt; C2["Used only when&lt;br/&gt;there's no valid session"]
+    C2 --&gt; D2[/"Starts a session marked&lt;br/&gt;viaRememberMe:&lt;br/&gt;no payments, no settings"/]
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class D2 trap
+</pre></div>
+      </div>
+      <p class="tip">Logout deletes <b>both</b> on the server. Password change, password reset and "log out everywhere" delete <b>every</b> remember-me token of the user.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

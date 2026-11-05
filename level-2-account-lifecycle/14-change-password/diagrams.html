@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>14. Change Password: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 2 · TOPIC 14</div>
+    <h1>Change Password: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">change password notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#stolen">3. Stolen session</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server checks on <code>POST /change-password { currentPassword, newPassword }</code></p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: nothing changes</span>
+        <span class="chip"><i class="trap"></i>Sessions deleted: can't be undone</span>
+        <span class="chip"><i class="db"></i>User / session store</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Rahul presses Save&lt;br/&gt;Cookie: sid=3016…"]) --&gt; L{"Logged in?"}
+    L -- No --&gt; E0[/"401 Not logged in"/]
+    L -- Yes --&gt; K{"Locked after 5&lt;br/&gt;wrong tries?"}
+    K -- Yes --&gt; E1[/"429 Too many wrong attempts&lt;br/&gt;try again in 15 minutes"/]
+    K -- No --&gt; C{"currentPassword&lt;br/&gt;matches the hash?"}
+    C -- "No: count +1" --&gt; E2[/"403 Current password&lt;br/&gt;is incorrect"/]
+    C -- Yes --&gt; N{"newPassword OK?&lt;br/&gt;8-128 chars, not common,&lt;br/&gt;not the email, not the same"}
+    N -- No --&gt; E3[/"400 Bad Request&lt;br/&gt;the reason"/]
+    N -- Yes --&gt; H[("Save new hash&lt;br/&gt;passwordChangedAt = now")]
+    H --&gt; X["Delete every OTHER session&lt;br/&gt;of this user"]
+    X --&gt; R["Delete this session too,&lt;br/&gt;create a NEW one + Set-Cookie"]
+    R --&gt; M["Email: Your password was changed"]
+    M --&gt; OK[/"200 OK&lt;br/&gt;Password changed"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E0,E1,E2,E3 error
+    class OK ok
+    class X,R trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Start at the top: Rahul is on the Change password page and presses Save.</li>
+          <li><b>Diamonds</b> are questions the server asks, in this order. Each <b>red</b> box stops everything.</li>
+          <li>The lockout is checked <b>first</b>, so a session thief can't keep guessing the current password.</li>
+          <li>The current password is checked <b>before</b> the new one, so nobody learns anything without knowing it.</li>
+          <li>The <b>yellow</b> boxes: other devices are logged out, and this device gets a <b>new</b> session ID.</li>
+        </ol>
+        <p class="tip">Wrong current password → <code>403</code>, not <code>401</code>. The user is still logged in, and a <code>401</code> would make most frontends send them to the login page.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul is logged in on a laptop and a phone. Priya has a copy of the laptop's cookie. Rahul changes his password on the laptop.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant L as Rahul's laptop
+    participant P as Rahul's phone
+    actor A as Priya (copied cookie)
+    participant S as Server
+    participant DB as Database
+    participant M as Email inbox
+
+    Note over L,DB: Sessions: laptop sid=3016…, phone sid=b71c… (Priya has a copy of 3016…)
+    L-&gt;&gt;S: POST /change-password { currentPassword: "old…", newPassword: "new password 456" }
+    S-&gt;&gt;DB: Find session sha256("3016…") → user u_1
+    S-&gt;&gt;DB: scrypt("old…") matches passwordHash ✓
+    Note over S: New password: long enough, not common, not the same ✓
+    S-&gt;&gt;DB: UPDATE u_1 SET passwordHash = scrypt(new), passwordChangedAt = now
+    S-&gt;&gt;DB: DELETE sessions of u_1 except sha256("3016…") (the phone)
+    S-&gt;&gt;DB: DELETE sha256("3016…"), INSERT sha256("d698…")
+    S-&gt;&gt;M: "Your password was changed"
+    S--&gt;&gt;L: 200 + Set-Cookie: sid=d698… { otherDevicesLoggedOut: 1 }
+    A-&gt;&gt;S: GET /me (Cookie: sid=3016…)
+    S--&gt;&gt;A: 401 Not logged in ✓
+    P-&gt;&gt;S: GET /me (Cookie: sid=b71c…)
+    S--&gt;&gt;P: 401 Not logged in ✓
+    L-&gt;&gt;S: GET /me (Cookie: sid=d698…)
+    S--&gt;&gt;L: 200 still logged in
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 3: the session alone isn't trusted. The <b>current password</b> is checked again.</li>
+          <li>Step 4: only the new <b>hash</b> is saved, never the password.</li>
+          <li>Steps 5–6: the phone's session is deleted, and the laptop's session is <b>replaced</b> with a new ID.</li>
+          <li>Steps 9–12: Priya's copy and the phone are both out. Only the laptop, with its new cookie, is still in (steps 13–14).</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="stolen">
+      <h2>3. Stolen session: why ask for the current password?</h2>
+      <p class="lead">Priya stole Rahul's session cookie, but she doesn't know his password. Compare the two designs.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Account safe</span>
+        <span class="chip"><i class="error"></i>Account taken over</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["❌ Only the session is checked"]) --&gt; B1["Priya sends&lt;br/&gt;{ newPassword: priya123 }&lt;br/&gt;with the stolen cookie"]
+    B1 --&gt; C1["Server: session OK,&lt;br/&gt;save the new password"]
+    C1 --&gt; D1[/"Rahul is locked out&lt;br/&gt;of his own account 😱"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class D1 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["✅ Current password required"]) --&gt; B2["Priya sends&lt;br/&gt;{ currentPassword: guess,&lt;br/&gt;newPassword: priya123 }"]
+    B2 --&gt; C2["Server: wrong current password&lt;br/&gt;403, count +1"]
+    C2 --&gt; D2[/"After 5 tries: 429 locked.&lt;br/&gt;Rahul's account is safe ✓"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class D2 ok
+</pre></div>
+      </div>
+      <p class="tip">A session proves someone logged in as Rahul <b>at some point</b>. The current password proves Rahul is here <b>right now</b>.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
