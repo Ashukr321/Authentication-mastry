@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>39. Apple Sign-In: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 39</div>
+    <h1>Apple Sign-In: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">Sign in with Apple notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow: first vs second sign-in</a>
+    <a href="#after">3. iPhone, notifications, deletion</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">From the button to a TiffinBox session, with every check on the way.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Refused</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["GET /login/apple"]) --&gt; P["state + nonce&lt;br/&gt;cookie apple_login:&lt;br/&gt;SameSite=None, Secure, 10 min"]
+    P --&gt; R["redirect to Apple&lt;br/&gt;scope name email,&lt;br/&gt;response_mode form_post"]
+    R --&gt; U["user confirms with Face ID"]
+    U --&gt; CB(["browser POSTs to /callback/apple&lt;br/&gt;code, state, user (first time only)"])
+    CB --&gt; S{"apple_login cookie found&lt;br/&gt;AND state matches?"}
+    S -- No --&gt; X1[/"400: state mismatch"/]
+    S -- Yes --&gt; CS["make client secret:&lt;br/&gt;ES256 JWT signed with .p8"]
+    CS --&gt; T{"token exchange OK?"}
+    T -- "No: invalid_client / invalid_grant" --&gt; X2[/"400 login failed"/]
+    T -- Yes --&gt; V{"ID token valid?&lt;br/&gt;JWKS, iss, aud = Services ID,&lt;br/&gt;exp, nonce"}
+    V -- No --&gt; X2
+    V -- Yes --&gt; K["account key = sub&lt;br/&gt;email from the ID token"]
+    K --&gt; N["user field present?&lt;br/&gt;save the name NOW"]
+    N --&gt; OK[/"✅ new TiffinBox session"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X1,X2 error
+    class OK ok
+    class P,CS,N trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Apple answers with a <b>POST</b>, not a redirect. That's why the login cookie must be <code>SameSite=None</code>: a <code>Lax</code> cookie is not sent on a cross-site POST.</li>
+          <li>The client secret isn't a fixed string: TiffinBox signs a short JWT with its <code>.p8</code> key.</li>
+          <li>The ID token is the only <b>signed</b> answer. The email comes from it; the <code>user</code> field is just a display name.</li>
+          <li>The three yellow boxes are where most Apple logins break.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow: first vs second sign-in</h2>
+      <p class="lead">Rahul signs in twice. Watch the <code>user</code> field: it only exists the first time.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul's browser
+    participant T as TiffinBox
+    participant A as Apple
+
+    R-&gt;&gt;T: GET /login/apple
+    T--&gt;&gt;R: 302 to Apple, cookie apple_login (SameSite=None, Secure)
+    R-&gt;&gt;A: authorize, scope name email, response_mode form_post, state, nonce
+    A--&gt;&gt;R: Face ID, then an auto-submitting form
+    R-&gt;&gt;T: POST /callback/apple code, state, user = Rahul Sharma (FIRST TIME ONLY)
+    T-&gt;&gt;A: POST /auth/token code + client_secret JWT (ES256, kid, iss = team, sub = Services ID)
+    A--&gt;&gt;T: id_token (sub 001234.5f2c..., email, email_verified "true"), refresh_token
+    T-&gt;&gt;T: verify id_token, create acct_5K4XQQ, SAVE name, store refresh_token
+    T--&gt;&gt;R: 303 /me, tb_sid (HttpOnly, SameSite=Lax)
+    Note over R,A: a week later, the same steps again
+    R-&gt;&gt;T: POST /callback/apple code, state (no user field)
+    T-&gt;&gt;A: POST /auth/token
+    A--&gt;&gt;T: id_token (same sub)
+    T-&gt;&gt;T: same sub, so the same acct_5K4XQQ, the name is already saved
+    T--&gt;&gt;R: 303 /me
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 5: the name arrives once. If step 8 fails, it is lost.</li>
+          <li>Step 6: the client secret is a JWT TiffinBox made itself.</li>
+          <li>Steps 10 to 14: no name this time. The <code>sub</code> finds the same account.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="after">
+      <h2>3. iPhone, notifications, deletion</h2>
+      <p class="lead">Three more ways Apple talks to your backend.</p>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant I as iPhone app
+    participant T as TiffinBox
+    participant A as Apple
+
+    I-&gt;&gt;I: rawNonce, nonce = SHA256(rawNonce)
+    I-&gt;&gt;A: Face ID with nonce
+    A--&gt;&gt;I: identityToken, authorizationCode
+    I-&gt;&gt;T: POST /auth/apple/native identityToken, code, rawNonce
+    T-&gt;&gt;T: verify, aud = bundle id, nonce = SHA256(rawNonce)
+    T-&gt;&gt;A: redeem code (client secret, sub = bundle id)
+    A--&gt;&gt;T: refresh_token, same sub as the website
+    T--&gt;&gt;I: 200, same account acct_5K4XQQ
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant A as Apple
+    participant T as TiffinBox
+
+    U-&gt;&gt;A: Settings, Stop using Apple ID with TiffinBox
+    A-&gt;&gt;T: POST /apple/notifications payload = signed JWT
+    T-&gt;&gt;T: verify JWT, events type consent-revoked
+    T-&gt;&gt;T: end all sessions, drop Apple tokens
+    T--&gt;&gt;A: 200
+    U-&gt;&gt;T: DELETE /me in the app
+    T-&gt;&gt;A: POST /auth/revoke refresh_token
+    A--&gt;&gt;T: 200, TiffinBox removed from the Apple ID
+    T--&gt;&gt;U: deleted
+</pre></div>
+      </div>
+      <p class="tip">Left: the iPhone app never shows a web page; the backend checks the same ID token, but with the <b>bundle ID</b> as <code>aud</code> and a <b>hashed</b> nonce. Right: Apple pushes changes to you (<code>email-disabled</code>, <code>email-enabled</code>, <code>consent-revoked</code>, <code>account-delete</code>), and you call <b>revoke</b> when the user deletes their account.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
