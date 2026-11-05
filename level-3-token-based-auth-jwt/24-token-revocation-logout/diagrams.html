@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>24. Token Revocation &amp; Logout with JWT: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 24</div>
+    <h1>Token Revocation &amp; Logout with JWT: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">token revocation notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#tools">3. Which tool for which job</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">The checks on <b>every protected request</b>. The last two are the price of revocation.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Accepted</span>
+        <span class="chip"><i class="error"></i>401</span>
+        <span class="chip"><i class="trap"></i>State lookup (Redis / cache)</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["GET /me&lt;br/&gt;Authorization: Bearer eyJ…"]) --&gt; S{"Signature valid&lt;br/&gt;(HS256 only)?"}
+    S -- No --&gt; E1[/"401 invalid_token"/]
+    S -- Yes --&gt; X{"exp in the future?"}
+    X -- No --&gt; E2[/"401 token_expired&lt;br/&gt;client refreshes (topic 22)"/]
+    X -- Yes --&gt; D{"jti on the&lt;br/&gt;deny-list?"}
+    D -- "Yes: logged out&lt;br/&gt;on this device" --&gt; E3[/"401 token_revoked"/]
+    D -- No --&gt; V{"ver = user's&lt;br/&gt;tokenVersion?"}
+    V -- "No: logged out everywhere,&lt;br/&gt;password changed, banned" --&gt; E3
+    V -- Yes --&gt; OK[/"200 request handled"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3 error
+    class OK ok
+    class D,V trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The first two checks are pure JWT: no database, no network.</li>
+          <li>The <b>yellow</b> checks add state: a small set of revoked <code>jti</code>s and one number per user.</li>
+          <li>The deny-list kills <b>one</b> token. A <code>tokenVersion</code> bump kills <b>all</b> of a user's tokens.</li>
+          <li>Without the yellow checks, a logged-out token works until <code>exp</code>. That's fine only if tokens are very short.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul logs out on his laptop, his phone keeps working, then he clicks "log out everywhere" from the phone.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant L as Rahul's laptop
+    participant P as Rahul's phone
+    participant S as Server
+    participant R as Store (Redis / DB)
+
+    Note over L,P: both logged in, tokens carry ver: 1
+    L-&gt;&gt;S: POST /auth/logout (refresh cookie + Bearer jti 3d54…)
+    S-&gt;&gt;R: DELETE laptop refresh token
+    S-&gt;&gt;R: SET deny 3d54… until its exp
+    S--&gt;&gt;L: 200 Logged out on this device + cookie cleared
+    L-&gt;&gt;S: GET /me (Bearer jti 3d54…)
+    S-&gt;&gt;R: 3d54… is denied
+    S--&gt;&gt;L: 401 token_revoked
+    P-&gt;&gt;S: GET /me (Bearer jti 3fb6…, ver 1)
+    S--&gt;&gt;P: 200 phone not affected
+    P-&gt;&gt;S: POST /auth/logout-all
+    S-&gt;&gt;R: tokenVersion 1 → 2, DELETE all refresh tokens
+    S--&gt;&gt;P: 200 Logged out on every device
+    P-&gt;&gt;S: GET /me (Bearer ver 1)
+    S--&gt;&gt;P: 401 token_revoked (ver 1 ≠ 2)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: logout revokes <b>both</b> tokens of this device: the refresh row is deleted, the access token's <code>jti</code> is denied.</li>
+          <li>Steps 5–7: the laptop's token fails <b>immediately</b>, not after 15 minutes.</li>
+          <li>Steps 8–9: the phone has its own <code>jti</code>, so it keeps working.</li>
+          <li>Steps 10–14: one number bump revokes every access token of the user, on every device.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="tools">
+      <h2>3. Which tool for which job</h2>
+      <p class="lead">Pick the cheapest tool that is fast enough for the event.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>No per-request lookup</span>
+        <span class="chip"><i class="trap"></i>Needs a lookup on every request</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["Logout on&lt;br/&gt;this device"]) --&gt; B1["Delete its&lt;br/&gt;refresh token"]
+    B1 --&gt; C1{"Is up to 15 min&lt;br/&gt;of access OK?"}
+    C1 -- Yes --&gt; D1[/"Done: short TTL&lt;br/&gt;does the rest"/]
+    C1 -- No --&gt; E1[/"Deny-list the jti&lt;br/&gt;until its exp"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class D1 ok
+    class E1 trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["Log out everywhere,&lt;br/&gt;password change,&lt;br/&gt;ban, role change"]) --&gt; B2["Delete ALL&lt;br/&gt;refresh tokens"]
+    B2 --&gt; C2[/"tokenVersion + 1:&lt;br/&gt;every older token&lt;br/&gt;fails the ver check"/]
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class C2 trap
+</pre></div>
+      </div>
+      <p class="tip">Every service that accepts the JWT must run the same checks (usually a shared Redis or the API gateway). If you end up with a lookup on every request anyway, compare with plain sessions (topic 09).</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
