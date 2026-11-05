@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>25. Token Storage: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 25</div>
+    <h1>Token Storage: localStorage vs Cookie vs Memory: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">token storage notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#attacks">3. XSS vs CSRF</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Choosing where the tokens live</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Recommended</span>
+        <span class="chip"><i class="error"></i>Don't</span>
+        <span class="chip"><i class="trap"></i>Needs CSRF protection</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Where do the tokens go?"]) --&gt; M{"Mobile app&lt;br/&gt;or browser?"}
+    M -- Mobile --&gt; KS[/"iOS Keychain /&lt;br/&gt;Android Keystore"/]
+    M -- Browser --&gt; LS{"Tempted by&lt;br/&gt;localStorage?"}
+    LS -- Yes --&gt; NO[/"❌ Any script can read it:&lt;br/&gt;XSS steals a 7-day token"/]
+    LS -- No --&gt; HS{"Very high security&lt;br/&gt;(bank, health)?"}
+    HS -- Yes --&gt; BFF[/"BFF: tokens stay on a server,&lt;br/&gt;browser gets a session cookie"/]
+    HS -- No --&gt; R["Refresh token:&lt;br/&gt;HttpOnly + Secure + SameSite=Strict&lt;br/&gt;cookie, Path=/auth"]
+    R --&gt; AT{"Access token?"}
+    AT -- "In memory,&lt;br/&gt;Bearer header" --&gt; OK1[/"✅ No CSRF on API calls,&lt;br/&gt;reload → /auth/refresh"/]
+    AT -- "HttpOnly cookie too" --&gt; OK2[/"✅ Simplest, works like a session&lt;br/&gt;+ SameSite + Origin check"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class NO error
+    class OK1,KS,BFF ok
+    class OK2,R trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Mobile apps don't use cookies: the OS's secure storage is the answer.</li>
+          <li>In a browser, the <b>refresh token</b> always goes in an <code>HttpOnly</code> cookie. It's the long-lived prize.</li>
+          <li>The <b>yellow</b> boxes are cookies: the browser sends them automatically, so CSRF defenses are required.</li>
+          <li>The access token can stay in memory (no CSRF) or also go in a cookie (simpler).</li>
+          <li><code>localStorage</code> is never the answer for tokens.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The same injected script runs on Rahul's page three times, once for each storage. What does it carry back to the attacker's server?</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant X as XSS script (on the page)
+    participant API as Our server
+    participant E as Attacker's server
+
+    Note over X: localStorage mode
+    X-&gt;&gt;X: read localStorage: accessToken + refreshToken
+    X-&gt;&gt;E: POST /collect { accessToken, refreshToken }
+    Note right of E: 😱 refresh token works for 7 days from anywhere
+    Note over X: memory mode (refresh in HttpOnly cookie)
+    X-&gt;&gt;X: localStorage empty, document.cookie empty
+    X-&gt;&gt;API: POST /auth/refresh (browser adds the HttpOnly cookie)
+    API--&gt;&gt;X: 200 { accessToken }
+    X-&gt;&gt;E: POST /collect { accessToken }
+    Note right of E: ⚠️ works for 15 minutes, no refresh token
+    Note over X: cookie mode (both tokens HttpOnly)
+    X-&gt;&gt;API: POST /auth/refresh
+    API--&gt;&gt;X: 200 { storage: cookie } (new cookies, no token in the body)
+    X-&gt;&gt;API: GET /me (cookie sent automatically)
+    API--&gt;&gt;X: 200, acting as Rahul while the tab is open
+    X-&gt;&gt;E: POST /collect { nothing usable }
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: <code>localStorage</code> hands over everything, including the 7-day refresh token.</li>
+          <li>Steps 3–6: <code>HttpOnly</code> hides the refresh token, but the script can ask for a new access token and take <b>that</b>.</li>
+          <li>Steps 7–11: with no token ever in JavaScript, nothing usable leaves. The script still acts as Rahul while the page is open.</li>
+          <li>Storage limits the damage. Only preventing XSS stops it (Level 7).</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="attacks">
+      <h2>3. XSS vs CSRF: which storage fears which attack</h2>
+      <p class="lead">Moving tokens out of JavaScript's reach makes them automatic, and automatic means CSRF.</p>
+      <div class="legend">
+        <span class="chip"><i class="error"></i>Exposed</span>
+        <span class="chip"><i class="ok"></i>Protected</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["XSS: a script runs&lt;br/&gt;on our page"]) --&gt; B1[/"localStorage, sessionStorage,&lt;br/&gt;non-HttpOnly cookies:&lt;br/&gt;tokens copied away"/]
+    A1 --&gt; C1[/"HttpOnly cookies:&lt;br/&gt;can't be read,&lt;br/&gt;only used while the tab is open"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class B1 error
+    class C1 ok
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["CSRF: another site makes&lt;br/&gt;the browser send a request"]) --&gt; B2[/"Cookies: sent automatically&lt;br/&gt;unless SameSite + Origin check"/]
+    A2 --&gt; C2[/"Authorization header&lt;br/&gt;(memory, localStorage):&lt;br/&gt;never added automatically"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class B2 error
+    class C2 ok
+</pre></div>
+      </div>
+      <p class="tip">CSRF is easy to block (<code>SameSite</code> + <code>Origin</code> check). XSS theft from <code>localStorage</code> is not. That's why the refresh token belongs in an <code>HttpOnly</code> cookie.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
