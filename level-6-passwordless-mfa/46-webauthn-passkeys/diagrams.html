@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>46. WebAuthn / Passkeys / FIDO2: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 6 · TOPIC 46</div>
+    <h1>WebAuthn / Passkeys / FIDO2: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">passkey notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Server checks</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#phishing">3. Why phishing fails</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Server checks</h2>
+      <p class="lead">What <code>POST /register/verify</code> and <code>POST /login/verify</code> check, in order. Both share the first part; login ends with the signature.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Passkey saved / signed in</span>
+        <span class="chip"><i class="error"></i>Rejected</span>
+        <span class="chip"><i class="trap"></i>The check that stops phishing</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Response from the browser&lt;br/&gt;clientDataJSON + authenticatorData"]) --&gt; C{"Challenge issued by us,&lt;br/&gt;not expired?&lt;br/&gt;(delete it now)"}
+    C -- No --&gt; E1[/"400 Challenge expired&lt;br/&gt;or already used"/]
+    C -- Yes --&gt; T{"type is webauthn.create&lt;br/&gt;or webauthn.get?"}
+    T -- No --&gt; E2[/"400 Expected type"/]
+    T -- Yes --&gt; O{"origin is EXACTLY&lt;br/&gt;our site?"}
+    O -- No --&gt; E3[/"400 Wrong origin"/]
+    O -- Yes --&gt; R{"rpIdHash =&lt;br/&gt;sha256 of our RP ID?"}
+    R -- No --&gt; E4[/"400 Made for another site"/]
+    R -- Yes --&gt; F{"Flags: UP and UV?&lt;br/&gt;(touched + fingerprint/PIN)"}
+    F -- No --&gt; E5[/"400 User verification required"/]
+    F -- Yes --&gt; K{"Registration&lt;br/&gt;or login?"}
+    K -- Registration --&gt; P["Read the COSE public key&lt;br/&gt;(ES256 or RS256)&lt;br/&gt;id not already used"]
+    P --&gt; S1[/"201 Save credential id&lt;br/&gt;+ public key + signCount"/]
+    K -- Login --&gt; L{"Known credential id?&lt;br/&gt;userHandle matches?"}
+    L -- No --&gt; E6[/"401 Unknown passkey"/]
+    L -- Yes --&gt; V{"Signature valid over&lt;br/&gt;authData + sha256 clientDataJSON?"}
+    V -- No --&gt; E7[/"401 Bad signature"/]
+    V -- Yes --&gt; N{"signCount went up&lt;br/&gt;(or both 0)?"}
+    N -- No --&gt; E8[/"401 Possible clone"/]
+    N -- Yes --&gt; S2[/"200 New session&lt;br/&gt;amr: hwk, mfa"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4,E5,E6,E7,E8 error
+    class S1,S2 ok
+    class O,R trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>challenge</b> is deleted the first time it's seen, even if a later check fails. One challenge, one try.</li>
+          <li>The two <b>yellow</b> checks tie the response to <b>our</b> site: the origin the browser wrote, and the RP ID the authenticator signed for.</li>
+          <li><b>UV</b> means a fingerprint, face or PIN was checked. That's why a passkey login counts as MFA.</li>
+          <li>Registration ends by <b>saving the public key</b>. Login ends by <b>using</b> it to check the signature.</li>
+          <li>Synced passkeys always send <code>signCount: 0</code>, so the clone check only runs when a counter is in use.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul signs up for PrintKaro with only a passkey, then signs in again the next day. The private key never leaves his phone.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Rahul
+    participant B as Browser
+    participant A as Phone authenticator
+    participant S as PrintKaro server
+    participant DB as Database
+
+    Note over U,DB: Sign up (registration ceremony)
+    B-&gt;&gt;S: POST /register/options { email: rahul, name: Rahul Sharma }
+    S-&gt;&gt;DB: save challenge 79kk... (5 min, single use)
+    S--&gt;&gt;B: { challenge, rp: { id: localhost }, user: { id: aZXF... random }, alg -7 or -257 }
+    B-&gt;&gt;B: rp.id fits this page's domain? ✓ write clientDataJSON with the REAL origin
+    B-&gt;&gt;A: create a key pair for localhost
+    A-&gt;&gt;U: Touch the fingerprint sensor
+    U--&gt;&gt;A: 👆
+    A-&gt;&gt;A: new key pair, private key stays inside
+    A--&gt;&gt;B: attestationObject { authData: rpIdHash, flags UP UV AT, public key }
+    B-&gt;&gt;S: POST /register/verify { id: g7Nq..., clientDataJSON, attestationObject }
+    S-&gt;&gt;DB: delete challenge, check type, origin, rpIdHash, flags
+    S-&gt;&gt;DB: INSERT user, INSERT credential { id: g7Nq..., public key, signCount: 0 }
+    S--&gt;&gt;B: 201 Account created + sid cookie (HttpOnly)
+    Note over U,DB: Next day: sign in (authentication ceremony)
+    B-&gt;&gt;S: POST /login/options (no email)
+    S--&gt;&gt;B: { challenge: 03PD..., rpId: localhost, allowCredentials: [] }
+    B-&gt;&gt;A: sign this for localhost
+    A-&gt;&gt;U: Sign in as Rahul Sharma? 👆
+    U--&gt;&gt;A: 👆
+    A--&gt;&gt;B: authenticatorData (counter 1) + signature + userHandle aZXF...
+    B-&gt;&gt;S: POST /login/verify { id: g7Nq..., clientDataJSON, authenticatorData, signature }
+    S-&gt;&gt;DB: find credential g7Nq... → public key, owner Rahul
+    S-&gt;&gt;S: verify(authData + sha256(clientDataJSON), signature, public key) ✓ counter 1 > 0 ✓
+    S--&gt;&gt;B: 200 Signed in as Rahul + new sid cookie
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 4: the <b>browser</b>, not the website, writes the origin into <code>clientDataJSON</code>.</li>
+          <li>Steps 6–8: the fingerprint only unlocks the authenticator. It's never sent anywhere.</li>
+          <li>Step 12: the database stores a <b>public</b> key. A database leak lets nobody log in.</li>
+          <li>Steps 14–18: login needs <b>no email</b>: the phone knows which passkeys it has for this site.</li>
+          <li>Step 22: the signature covers the challenge <b>and</b> the origin, so it can't be reused or relayed from another site.</li>
+        </ol>
+        <p class="tip">The fingerprint never reaches the server. "Biometric login" with passkeys means the biometric unlocks a key on the device.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="phishing">
+      <h2>3. Why phishing fails</h2>
+      <p class="lead">Rahul clicks a link to <b>printkaro-login.in</b>, a perfect copy of PrintKaro. With a password and an OTP he'd lose his account. With a passkey:</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Works</span>
+        <span class="chip"><i class="error"></i>Blocked</span>
+        <span class="chip"><i class="trap"></i>The attacker's move</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Rahul on the REAL site&lt;br/&gt;origin: printkaro.com"]) --&gt; B["Site asks for a passkey&lt;br/&gt;rpId: printkaro.com"]
+    B --&gt; C{"Browser: is printkaro.com&lt;br/&gt;this page's domain?"}
+    C -- Yes --&gt; D["Phone has a passkey for&lt;br/&gt;printkaro.com: 👆 sign"]
+    D --&gt; E{"Server: origin in&lt;br/&gt;clientDataJSON = printkaro.com?"}
+    E -- Yes --&gt; F[/"Signed in"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class F ok
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Rahul on the FAKE site&lt;br/&gt;origin: printkaro-login.in"]) --&gt; X{"What does the fake&lt;br/&gt;page ask for?"}
+    X -- "rpId: printkaro.com&lt;br/&gt;(relayed from the real site)" --&gt; C[/"Browser: SecurityError&lt;br/&gt;not this page's domain"/]
+    X -- "rpId: printkaro-login.in" --&gt; D[/"Phone: no passkey&lt;br/&gt;for this site"/]
+    X -- "a stolen signature&lt;br/&gt;from earlier" --&gt; E[/"Server: challenge&lt;br/&gt;already used"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class C,D,E error
+    class X trap
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>On the real site, three things agree: the page's domain, the passkey's RP ID, and the origin the server expects.</li>
+          <li>On the fake site, every path is blocked by a machine check. Rahul doesn't need to notice the wrong domain.</li>
+          <li>Compare with a password + OTP: the fake site just forwards what Rahul types to the real site, in real time.</li>
+          <li>A hacked <b>subdomain</b> (blog.printkaro.com) passes the browser check, so the server's exact <b>origin</b> check is still needed.</li>
+        </ol>
+        <p class="tip">This only protects Rahul if the account has no weaker way in. Keep a phishable "password + SMS" login around, and attackers phish that instead.</p>
+      </aside>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
