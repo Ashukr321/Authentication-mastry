@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>40. Account Linking: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 40</div>
+    <h1>Account Linking: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">account linking notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow: linking with proof</a>
+    <a href="#hijack">3. Pre-account hijacking</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">A provider login just came back. Which account does it belong to?</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in / linked</span>
+        <span class="chip"><i class="error"></i>Refused or held back</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    CB(["GET /callback/:provider"]) --&gt; S{"state from THIS session,&lt;br/&gt;same provider?"}
+    S -- No --&gt; X0[/"400 state mismatch"/]
+    S -- Yes --&gt; I{"intent?"}
+    I -- link --&gt; L1{"same user who started it,&lt;br/&gt;still logged in?"}
+    L1 -- No --&gt; X0
+    L1 -- Yes --&gt; L2{"identity owned by&lt;br/&gt;ANOTHER user?"}
+    L2 -- Yes --&gt; X1[/"409 never move it"/]
+    L2 -- No --&gt; OK1[/"✅ linked, owner emailed"/]
+    I -- login --&gt; K{"provider + id&lt;br/&gt;already known?"}
+    K -- Yes --&gt; OK2[/"✅ log in to its user&lt;br/&gt;(email not used)"/]
+    K -- No --&gt; E{"verified account&lt;br/&gt;with this email?"}
+    E -- "Yes, and provider trusted + verified" --&gt; OK3[/"✅ auto-link, owner emailed"/]
+    E -- "Yes, but claim not trusted" --&gt; P[/"409 account exists:&lt;br/&gt;log in with password, then confirm"/]
+    E -- No --&gt; U{"UNverified account with&lt;br/&gt;this email, trusted provider?"}
+    U -- Yes --&gt; R["that account loses the email&lt;br/&gt;(pre-hijack blocked)"]
+    U -- No --&gt; N[/"✅ new user + identity"/]
+    R --&gt; N
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X0,X1,P error
+    class OK1,OK2,OK3,N ok
+    class E,U trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>link</b> branch (top) is the safe one: the user is logged in, recently, and asked for it.</li>
+          <li>A <b>known</b> identity never looks at email. Only brand-new identities reach the email questions.</li>
+          <li>The two yellow diamonds are where apps get taken over: auto-linking on an untrusted email claim, or linking to an account whose email was never verified.</li>
+          <li>Every link sends an email to the account owner.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow: linking with proof</h2>
+      <p class="lead">Microsoft says "rahul@gmail.com" but PrintKaro doesn't trust Microsoft's email. Rahul proves it's him; Vikram can't.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    actor R as Rahul
+    participant P as PrintKaro
+    participant M as Microsoft (mock)
+
+    V-&gt;&gt;P: POST /login/microsoft
+    P-&gt;&gt;M: authorize, then token + userinfo
+    M--&gt;&gt;P: sub f00dcafe...0666, email = Rahul's email, not verified
+    P--&gt;&gt;V: 409 account exists, log in with password to connect
+    V-&gt;&gt;P: POST /link/confirm
+    P--&gt;&gt;V: 401 log in first (he has no password for Rahul's account)
+    R-&gt;&gt;P: POST /login/microsoft
+    M--&gt;&gt;P: sub 9188040d...ea81, email = Rahul's email, not verified
+    P--&gt;&gt;R: 409 account exists, pending link saved in this session
+    R-&gt;&gt;P: POST /login, his email + password
+    P--&gt;&gt;R: 200 loggedIn acct_4SS_jw, pendingLink Microsoft, confirm?
+    R-&gt;&gt;P: POST /link/confirm
+    P-&gt;&gt;P: link microsoft and 9188040d...ea81 to acct_4SS_jw, email Rahul
+    P--&gt;&gt;R: 200 identities google, github, microsoft
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1 to 6: Vikram gets the same answer as Rahul, but can't do the next step.</li>
+          <li>Step 9: the pending link is kept in Rahul's session and survives the login (step 10), which rotates the session id.</li>
+          <li>Step 12: the link happens only after an explicit confirm.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="hijack">
+      <h2>3. Pre-account hijacking</h2>
+      <p class="lead">Vikram signs up first with Priya's email. Left: a naive app. Right: PrintKaro.</p>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    participant A as Naive app
+    actor Pr as Priya
+
+    V-&gt;&gt;A: sign up with Priya's email + HIS password
+    A-&gt;&gt;A: account X, email not verified
+    Pr-&gt;&gt;A: Log in with Google (verified)
+    A-&gt;&gt;A: same email, link Google to X
+    Pr-&gt;&gt;A: saves her address and card in X
+    V-&gt;&gt;A: logs in with his password
+    A--&gt;&gt;V: account X, Priya's data
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    participant P as PrintKaro
+    actor Pr as Priya
+
+    V-&gt;&gt;P: sign up with Priya's email + HIS password
+    P-&gt;&gt;P: account X, email not verified
+    Pr-&gt;&gt;P: Log in with Google (trusted, verified)
+    P-&gt;&gt;P: X is unverified, so never link, X loses the email
+    P--&gt;&gt;Pr: her OWN new account
+    V-&gt;&gt;P: logs in with Priya's email + his password
+    P--&gt;&gt;V: 401 wrong email or password
+</pre></div>
+      </div>
+      <p class="tip">The rule: <b>never link to an account whose email was never verified.</b> When a trusted provider proves the email, the unverified account loses its claim and the real owner gets a clean account.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
