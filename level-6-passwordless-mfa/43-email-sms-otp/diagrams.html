@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>43. Email / SMS OTP: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 6 · TOPIC 43</div>
+    <h1>Email / SMS OTP: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">email / SMS OTP notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#brute">3. Brute force math</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check on the two requests: <code>POST /auth/otp/request</code> and <code>POST /auth/otp/verify</code>.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="trap"></i>Counted or deleted: limits the guessing</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /auth/otp/request&lt;br/&gt;{ channel, to }"]) --&gt; B{"Valid email, or phone&lt;br/&gt;in +91 format?"}
+    B -- No --&gt; E1[/"400 bad input, or&lt;br/&gt;can't SMS this country"/]
+    B -- Yes --&gt; C{"Over 10 requests&lt;br/&gt;from this IP in 15 min?"}
+    C -- Yes --&gt; E2[/"429 Too many requests"/]
+    C -- No --&gt; D{"10 wrong codes for this&lt;br/&gt;email/phone in the last hour?"}
+    D -- Yes --&gt; E3[/"429 Try again in an hour"/]
+    D -- No --&gt; F{"Code sent to it&lt;br/&gt;less than 60 s ago?"}
+    F -- Yes --&gt; E4[/"429 + Retry-After: 60"/]
+    F -- No --&gt; G["Delete older codes&lt;br/&gt;code = randomInt, 6 digits&lt;br/&gt;store HMAC, attempts 0, +5 min"]
+    G --&gt; OK[/"202 { challengeId }&lt;br/&gt;code sent by email / SMS"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4 error
+    class OK ok
+    class G trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /auth/otp/verify&lt;br/&gt;{ challengeId, code }"]) --&gt; B{"Challenge found&lt;br/&gt;and not expired?"}
+    B -- No --&gt; E1[/"400 Wrong or expired code"/]
+    B -- Yes --&gt; C{"10 wrong codes for this&lt;br/&gt;email/phone this hour?"}
+    C -- Yes --&gt; E2[/"429 Try again in an hour"/]
+    C -- No --&gt; D["attempts + 1&lt;br/&gt;(BEFORE comparing)"]
+    D --&gt; F{"timingSafeEqual(&lt;br/&gt;HMAC of the code,&lt;br/&gt;stored HMAC)?"}
+    F -- No --&gt; G["failures + 1 for this&lt;br/&gt;email/phone"]
+    G --&gt; H{"5 attempts used?"}
+    H -- Yes --&gt; K["Delete the code"]
+    H -- No --&gt; E3[/"400 Wrong or expired code&lt;br/&gt;attemptsLeft: N"/]
+    K --&gt; E3
+    F -- Yes --&gt; X["Delete the code&lt;br/&gt;(single use)"]
+    X --&gt; U["Find or create the user&lt;br/&gt;(verified)"]
+    U --&gt; OK[/"200 Signed in&lt;br/&gt;Set-Cookie: sid (HttpOnly, SameSite=Lax)"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3 error
+    class OK ok
+    class D,G,K,X trap
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Left, sending:</b> four limits run before any code is made: valid input, per-IP, per-destination failures, and the 60-second resend timer.</li>
+          <li>Only an <b>HMAC</b> of the code is stored, never the code itself.</li>
+          <li><b>Right, checking:</b> the attempt counter goes up <b>before</b> the compare, so parallel guesses can't sneak past the limit.</li>
+          <li>Two limits work together: <b>5 tries per code</b> and <b>10 failures per email/phone per hour</b>.</li>
+          <li>The <b>yellow</b> boxes are where guessing gets counted or a code gets destroyed.</li>
+        </ol>
+      </aside>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Priya signs in to PrintKaro on her laptop with a code sent to her phone.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor P as Priya
+    participant B as Laptop browser
+    participant S as PrintKaro server
+    participant DB as Database
+    participant T as SMS provider
+    participant Ph as Priya's phone
+
+    P-&gt;&gt;B: Picks SMS, types "+91 98765-43210"
+    B-&gt;&gt;S: POST /auth/otp/request { channel: "sms", to: "+91 98765-43210" }
+    Note over S: normalize → "+919876543210" (+91 allowed)&lt;br/&gt;IP limit OK, no code in the last 60 s
+    Note over S: code = randomInt(0, 1000000) → "272625"&lt;br/&gt;challengeId = randomBytes(32) → "tv1b…aQM"
+    S-&gt;&gt;DB: INSERT challenge { id: "tv1b…", codeHash: HMAC(secret, "tv1b…:272625"), attempts: 0, expiresAt: +5 min }
+    S-&gt;&gt;T: send to +919876543210: "272625 is your PrintKaro code…" + "@printkaro.in #272625"
+    T-&gt;&gt;Ph: SMS arrives
+    S--&gt;&gt;B: 202 { challengeId: "tv1b…", expiresInSeconds: 300 }
+    Ph--&gt;&gt;P: Reads 272625 (or the browser offers to autofill it)
+    P-&gt;&gt;B: Types the code into the one-time-code box
+    B-&gt;&gt;S: POST /auth/otp/verify { challengeId: "tv1b…", code: "272625" }
+    S-&gt;&gt;DB: attempts = attempts + 1 → 1 (of 5)
+    Note over S: timingSafeEqual(HMAC(secret, "tv1b…:272625"), codeHash) ✓
+    S-&gt;&gt;DB: DELETE challenge "tv1b…", reset failures for this phone
+    S-&gt;&gt;DB: Find or INSERT user { id: "u_7", phone: "+919876543210" }
+    S-&gt;&gt;DB: INSERT session { sha256(sid), userId: "u_7", expiresAt: +7 days }
+    S--&gt;&gt;B: 200 { message: "Signed in", isNewUser: true } + Set-Cookie: sid=1FV6… (HttpOnly, SameSite=Lax)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 3: the phone number is <b>normalized</b> first, so every format of it shares one set of limits.</li>
+          <li>Step 5: the database gets only the <b>HMAC</b>. The plain code goes only into the SMS (step 6).</li>
+          <li>Step 8: the browser gets the <b>challengeId</b>, not the code. The code travels a different path: through Priya's phone and her eyes.</li>
+          <li>Step 12: the attempt is <b>counted before</b> the compare in step 13. Step 14: the code is <b>deleted</b>, so it works once.</li>
+        </ol>
+        <p class="tip">The last SMS line <code>@printkaro.in #272625</code> lets the phone autofill the code <b>only</b> on printkaro.in, not on a look-alike phishing site.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="brute">
+      <h2>3. Brute force math: why limits matter</h2>
+      <p class="lead">An attacker scripts guesses against Rahul's phone number. Same 6-digit code, three servers.</p>
+      <div class="legend">
+        <span class="chip"><i class="error"></i>Broken</span>
+        <span class="chip"><i class="trap"></i>Weak</span>
+        <span class="chip"><i class="ok"></i>Safe enough</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    A(["Attacker script:&lt;br/&gt;guess 000000, 000001, …"]) --&gt; N["No limits"]
+    A --&gt; P["5 tries per code only"]
+    A --&gt; Q["5 tries per code&lt;br/&gt;+ 10 fails per phone per hour"]
+    N --&gt; N2[/"1,000,000 guesses&lt;br/&gt;a few minutes: account taken"/]
+    P --&gt; P2[/"New code every minute,&lt;br/&gt;5 guesses each: 7,200 a day&lt;br/&gt;about 1 in 140 per day"/]
+    Q --&gt; Q2[/"240 guesses a day&lt;br/&gt;about 1 in 4,000 per day&lt;br/&gt;+ Rahul sees codes he didn't ask for"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class N,N2 error
+    class P,P2 trap
+    class Q,Q2 ok
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Red:</b> with no limits, a 6-digit code is a 6-digit password anyone can try a million times.</li>
+          <li><b>Yellow:</b> a per-code limit alone is not enough: the attacker just asks for a new code every minute.</li>
+          <li><b>Green:</b> adding a cap per <b>email/phone</b> cuts it to about 240 guesses a day, and the flood of unwanted codes warns the real owner.</li>
+        </ol>
+        <p class="tip">Want even safer? Lock the account for review after repeated lockouts, use 8 digits for payments, or move to TOTP (topic 44) and passkeys (topic 46).</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
