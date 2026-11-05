@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>32. API Keys: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 4 · TOPIC 32</div>
+    <h1>API Keys: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">API keys notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#anatomy">3. Key anatomy</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the server checks, in order, for every request that carries an API key.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Allowed</span>
+        <span class="chip"><i class="error"></i>Stopped</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /api/orders&lt;br/&gt;X-API-Key: chai_key_kSmY..."]) --&gt; URL{"Key in the URL?&lt;br/&gt;(?api_key=)"}
+    URL -- Yes --&gt; B400[/"400 send it in a header,&lt;br/&gt;rotate this key"/]
+    URL -- No --&gt; H["sha256(key)&lt;br/&gt;look up by hash"]
+    H --&gt; F{"Found, not revoked,&lt;br/&gt;not expired?"}
+    F -- No --&gt; U401[/"401 Invalid API key&lt;br/&gt;(the reason goes to the log)"/]
+    F -- Yes --&gt; RL{"Under the rate limit&lt;br/&gt;for THIS key?"}
+    RL -- No --&gt; T429[/"429 + Retry-After"/]
+    RL -- Yes --&gt; SC{"Key has the&lt;br/&gt;orders:write scope?"}
+    SC -- No --&gt; F403[/"403 missing scope"/]
+    SC -- Yes --&gt; OWN["Act for the key's OWNER only&lt;br/&gt;(u_rahul's orders)"]
+    OWN --&gt; OK[/"✅ 201 created&lt;br/&gt;log: key_a6123946 created ord_..."/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class B400,U401,T429,F403 error
+    class OK ok
+    class URL,OWN trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Keys in URLs leak into logs, so they're refused before anything else.</li>
+          <li>The server never stored the key, only its <b>hash</b>, so it hashes what it receives and looks that up.</li>
+          <li>Unknown, revoked and expired all give the <b>same</b> 401.</li>
+          <li>Then three separate questions: how often (<b>429</b>), what (<b>scope</b>, 403), and whose data (<b>owner</b>, topic 31).</li>
+          <li>The log names the <b>key id</b>, so you know which integration did what.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">One key's whole life: Rahul creates it, his POS machine uses it, then he rotates it.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul (dashboard)
+    participant POS as POS machine
+    participant API as Shop API
+    participant DB as api_keys table
+
+    R-&gt;&gt;API: POST /keys (Bearer session) name POS machine, scopes read + write
+    API-&gt;&gt;DB: save sha256(key), id key_a612, hint chai_key_kSmY…1s0o
+    API--&gt;&gt;R: 201 the full key, shown ONCE
+    R-&gt;&gt;POS: put the key in the POS config (secret store, not Git)
+    POS-&gt;&gt;API: POST /api/orders (X-API-Key)
+    API-&gt;&gt;DB: find sha256(key), update lastUsedAt
+    API--&gt;&gt;POS: 201 order created
+    POS-&gt;&gt;API: 10 more requests in the same minute
+    API--&gt;&gt;POS: 429 Retry-After 59
+    Note over R,DB: rotation, with no downtime
+    R-&gt;&gt;API: POST /keys (new POS key)
+    API--&gt;&gt;R: 201 new key, shown once
+    R-&gt;&gt;POS: switch the config to the new key
+    R-&gt;&gt;API: GET /keys, old key's lastUsedAt has stopped changing
+    R-&gt;&gt;API: DELETE /keys/key_a612
+    API-&gt;&gt;DB: set revokedAt
+    POS-&gt;&gt;API: a request with the OLD key (an old copy somewhere)
+    API--&gt;&gt;POS: 401 Invalid API key
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–3: a logged-in person creates the key. The database gets only the hash.</li>
+          <li>Steps 4–7: the program sends the key in a header; the server updates <code>lastUsedAt</code>.</li>
+          <li>Steps 8–9: the per-key rate limit protects the API from one runaway script.</li>
+          <li>Steps 10–17: rotation. Two keys work at the same time until the old one is revoked, and revoking takes effect at once.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="anatomy">
+      <h2>3. Key anatomy</h2>
+      <p class="lead">What the program holds, and what the server keeps. The two never need to match outside a hash.</p>
+      <div class="legend">
+        <span class="chip"><i class="trap"></i>Secret: only the program has it</span>
+        <span class="chip"><i class="ok"></i>Safe to store and show</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    K(["The key the program holds"]) --&gt; P["chai_key_&lt;br/&gt;prefix: humans and secret&lt;br/&gt;scanners can recognise it"]
+    K --&gt; S["7qlk4HUwtdIPJTcsd9J9...&lt;br/&gt;32 random bytes, base64url"]
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class S trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    D(["What the database stores"]) --&gt; D1["key_hash: sha256 of the key"]
+    D --&gt; D2["id key_9b69d0e5, name, owner"]
+    D --&gt; D3["hint chai_key_7qlk…w1ig"]
+    D --&gt; D4["scopes, expiresAt,&lt;br/&gt;lastUsedAt, revokedAt"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class D1,D2,D3,D4 ok
+</pre></div>
+      </div>
+      <p class="tip">A database leak gives attackers hashes of 256-bit random values: useless. That's why a fast SHA-256 is fine here, while passwords need a slow hash.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
