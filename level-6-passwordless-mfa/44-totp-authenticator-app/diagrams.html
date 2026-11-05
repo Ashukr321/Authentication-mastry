@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>44. TOTP (Authenticator App): Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 6 · TOPIC 44</div>
+    <h1>TOTP (Authenticator App): Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">TOTP notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#code">1. How a code is made</a>
+    <a href="#setup">2. Setup flow</a>
+    <a href="#login">3. Login data flow</a>
+  </nav>
+
+  <main>
+    <section id="code">
+      <h2>1. How a code is made</h2>
+      <p class="lead">The phone and the server run the <b>same</b> steps on their own. No network needed: same secret + same time = same code.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>The code on the screen</span>
+        <span class="chip"><i class="trap"></i>The shared secret: set up once, kept safe</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    S[("Shared secret&lt;br/&gt;20 random bytes&lt;br/&gt;base32: 63H4RT77…")] --&gt; H
+    T(["Current time&lt;br/&gt;1793864460 seconds since 1970"]) --&gt; C["step = floor(time / 30)&lt;br/&gt;= 59795482"]
+    C --&gt; M["counter as 8 bytes&lt;br/&gt;00 00 00 00 03 90 68 1A"]
+    M --&gt; H["HMAC-SHA1(secret, counter)&lt;br/&gt;20 bytes"]
+    H --&gt; O["offset = last 4 bits&lt;br/&gt;of the last byte (0 to 15)"]
+    O --&gt; R["read 4 bytes at offset&lt;br/&gt;drop the top bit"]
+    R --&gt; D["number mod 1,000,000&lt;br/&gt;pad to 6 digits"]
+    D --&gt; OK[/"678117&lt;br/&gt;valid for this 30-second step"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class OK ok
+    class S trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Two inputs: the <b>secret</b> (yellow, shared once by QR code) and the <b>clock</b>.</li>
+          <li>Time is cut into <b>30-second steps</b>. Everyone in the same step gets the same counter.</li>
+          <li><b>HMAC-SHA1</b> mixes the secret and the counter into 20 random-looking bytes.</li>
+          <li>"Dynamic truncation": the last 4 bits pick <b>where</b> to read 4 bytes, which become a number.</li>
+          <li>The last <b>6 digits</b> are the code. The next step gives a completely different one.</li>
+        </ol>
+        <p class="tip">This is HOTP (RFC 4226) with time as the counter, which is TOTP (RFC 6238). <code>server.js</code> checks its version against the RFC test vectors every time it starts.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="setup">
+      <h2>2. Setup flow</h2>
+      <p class="lead">Rahul is logged in and turns on 2FA: <code>POST /2fa/setup</code>, then <code>POST /2fa/enable</code>.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>2FA is on</span>
+        <span class="chip"><i class="error"></i>Error: 2FA stays off</span>
+        <span class="chip"><i class="trap"></i>Shown once / stored safely</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /2fa/setup&lt;br/&gt;(needs a session)"]) --&gt; B{"2FA already on?"}
+    B -- Yes --&gt; E0[/"409 2FA is already on"/]
+    B -- No --&gt; C["secret = randomBytes(20)&lt;br/&gt;store it ENCRYPTED (AES-256-GCM)&lt;br/&gt;enabled = false"]
+    C --&gt; Q[/"200 { secret, otpauthUrl }&lt;br/&gt;shown as a QR code + text key"/]
+    Q --&gt; P["Rahul scans it in&lt;br/&gt;Google Authenticator"]
+    P --&gt; V(["POST /2fa/enable&lt;br/&gt;{ code: 678117 }"])
+    V --&gt; W{"Code matches&lt;br/&gt;step now ±1?"}
+    W -- No --&gt; E1[/"400 Wrong code&lt;br/&gt;check the time on your phone"/]
+    E1 -.-&gt; V
+    W -- Yes --&gt; X["enabled = true&lt;br/&gt;lastUsedStep = this step"]
+    X --&gt; RC["Make 10 recovery codes&lt;br/&gt;store only sha256 of each"]
+    RC --&gt; OK[/"200 2FA is on&lt;br/&gt;+ recoveryCodes (shown ONCE)"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E0,E1 error
+    class OK,X ok
+    class C,Q,RC trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Setup makes the secret and stores it <b>encrypted</b>: the server must read it back later, so it can't be hashed.</li>
+          <li>The QR code is just the <code>otpauth://</code> URL. Make it on <b>your</b> side, never with an online QR website.</li>
+          <li>2FA is <b>still off</b> after setup. A wrong scan can't lock Rahul out.</li>
+          <li>One correct code proves the app works. Only then is 2FA switched on.</li>
+          <li>The <b>recovery codes</b> are shown once. The server keeps only their hashes.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="login">
+      <h2>3. Login data flow</h2>
+      <p class="lead">Rahul logs in with his password, then the code from his phone. A ticket in between, a session only at the end.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Rahul
+    participant B as Browser
+    participant S as PrintKaro server
+    participant DB as Database
+    participant Ph as Authenticator app
+
+    U-&gt;&gt;B: Types email + password
+    B-&gt;&gt;S: POST /login { email, password }
+    S-&gt;&gt;DB: Find Rahul, scrypt check ✓, totp.enabled = true
+    Note over S: mfaToken = randomBytes(32) → "lOBH…fwVo"
+    S-&gt;&gt;DB: INSERT ticket { sha256("lOBH…"), userId, expiresAt: +5 min, attempts: 0 }
+    S--&gt;&gt;B: 200 { mfaRequired: true, mfaToken: "lOBH…" } (NO session cookie)
+    U-&gt;&gt;Ph: Opens the app
+    Note over Ph: HOTP(secret, floor(now / 30)) → 663287&lt;br/&gt;(offline, no network)
+    Ph--&gt;&gt;U: 663287
+    U-&gt;&gt;B: Types 663287
+    B-&gt;&gt;S: POST /login/2fa { mfaToken: "lOBH…", code: "663287" }
+    S-&gt;&gt;DB: Find ticket, attempts + 1, user fails this hour below 10 ✓
+    S-&gt;&gt;DB: Read + DECRYPT the TOTP secret
+    Note over S: try steps now-1, now, now+1&lt;br/&gt;skip steps ≤ lastUsedStep (replay)&lt;br/&gt;timingSafeEqual → match at step "now" ✓
+    S-&gt;&gt;DB: lastUsedStep = now, DELETE ticket, reset fails
+    S-&gt;&gt;DB: INSERT session { sha256(sid), userId, expiresAt: +7 days }
+    S--&gt;&gt;B: 200 "Logged in with 2FA" + Set-Cookie: sid=nQTv… (HttpOnly, SameSite=Lax)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 6: a right password gives only a <b>ticket</b> (5 minutes, single use), never a session.</li>
+          <li>Step 8: the phone computes the code <b>offline</b>. Nothing is sent to it, so there's nothing to intercept.</li>
+          <li>Step 12: the attempt is <b>counted first</b>. Step 14: the ±1 window allows for clock drift, and old steps are refused.</li>
+          <li>Step 15: <code>lastUsedStep</code> moves forward, so 663287 can never be used again, even within its 30 seconds.</li>
+        </ol>
+        <p class="tip">Lost phone? In step 11 send <code>recoveryCode</code> instead of <code>code</code>. The server deletes that recovery code's hash, so it works once.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
