@@ -9,7 +9,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const BASE_URL = `http://localhost:${PORT}`;
 // Grace period before a deleted account is really erased (set DELETION_GRACE_SECONDS=10 to watch it happen)
 const GRACE_MS = (Number(process.env.DELETION_GRACE_SECONDS) || 30 * 24 * 60 * 60) * 1000; // 30 days
-const GRACE_DAYS_TEXT = GRACE_MS >= 86_400_000 ? `${GRACE_MS / 86_400_000} days` : `${GRACE_MS / 1000} seconds`;
+const GRACE_TEXT = GRACE_MS >= 86_400_000 ? `${GRACE_MS / 86_400_000} days` : `${GRACE_MS / 1000} seconds`;
 
 // ---------- "Database" ----------
 // shortcut: in-memory Maps, lost on restart. A real app uses database tables.
@@ -148,9 +148,9 @@ app.post("/account/delete", requireAuth, async (req, res) => {
   deleteSessionsOf(user.id);
   res.clearCookie("sid", { path: "/" });
   auditLog.push({ event: "deletion_requested", userId: user.id, at: new Date().toISOString() });
-  sendEmail(user.email, "Your account will be deleted", `It will be erased in ${GRACE_DAYS_TEXT}. Changed your mind, or wasn't you? Just log in before then to cancel.`);
+  sendEmail(user.email, "Your account will be deleted", `It will be erased in ${GRACE_TEXT}. Changed your mind, or wasn't you? Just log in before then to cancel.`);
   res.status(202).json({
-    message: `Your account will be permanently deleted in ${GRACE_DAYS_TEXT}. Log in before then to cancel.`,
+    message: `Your account will be permanently deleted in ${GRACE_TEXT}. Log in before then to cancel.`,
     deleteAfter: new Date(user.deleteAfter).toISOString(),
   });
 });
@@ -165,7 +165,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Something went wrong" });
 });
 
-app.listen(PORT, () => console.log(`Account deletion / deactivation API on ${BASE_URL} (deletion grace period: ${GRACE_DAYS_TEXT})`));
+app.listen(PORT, () => console.log(`Account deletion / deactivation API on ${BASE_URL} (deletion grace period: ${GRACE_TEXT})`));
 
 // 6. PURGE JOB: really erase accounts whose grace period is over.
 // shortcut: a setInterval in the web server. A real app runs a scheduled job (cron, a queue worker)

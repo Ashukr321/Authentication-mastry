@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>17. Account Deletion / Deactivation: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 2 · TOPIC 17</div>
+    <h1>Account Deletion / Deactivation: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">account deletion / deactivation notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#states">3. Account states</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check the server does when Rahul presses <b>"Delete my account"</b></p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Done</span>
+        <span class="chip"><i class="error"></i>Rejected</span>
+        <span class="chip"><i class="trap"></i>Waiting: can still be undone</span>
+        <span class="chip"><i class="db"></i>Database</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /account/delete&lt;br/&gt;{ password, confirm }"]) --&gt; S{"Valid session and&lt;br/&gt;status = active?"}
+    S -- No --&gt; E1[/"401 Not logged in"/]
+    S -- Yes --&gt; C{"confirm = DELETE?"}
+    C -- No --&gt; E2[/"400 Type DELETE to confirm"/]
+    C -- Yes --&gt; P{"Password correct?&lt;br/&gt;(re-authentication)"}
+    P -- No --&gt; E3[/"403 Wrong password"/]
+    P -- Yes --&gt; M[("status = pending_deletion&lt;br/&gt;deleteAfter = now + 30 days")]
+    M --&gt; L["Delete ALL sessions:&lt;br/&gt;every device logged out"]
+    L --&gt; N["Email: your account&lt;br/&gt;will be deleted"]
+    N --&gt; W[/"202 Accepted&lt;br/&gt;grace period starts"/]
+    W --&gt; G{"Logs in again&lt;br/&gt;before deleteAfter?"}
+    G -- Yes --&gt; X[/"Deletion cancelled&lt;br/&gt;status = active"/]
+    G -- No --&gt; J["Purge job: erase personal data,&lt;br/&gt;tokens, files, third-party copies"]
+    J --&gt; K[/"Account erased&lt;br/&gt;audit log keeps the id only"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3 error
+    class X,K ok
+    class W trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Only a logged-in, <b>active</b> user gets past the first check.</li>
+          <li>Typing <b>DELETE</b> stops mis-clicks. The <b>password</b> stops someone with a stolen session cookie.</li>
+          <li>Nothing is erased yet: the row is only <b>marked</b> (soft delete) and every device is logged out.</li>
+          <li>The <b>yellow</b> box is the grace period. Logging in with the password cancels it.</li>
+          <li>When it ends, a <b>background job</b> really erases the data. Only an anonymous record stays.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul deactivates, comes back, then deletes his account for good. His phone is logged in the whole time.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant L as Rahul's laptop
+    participant P as Rahul's phone
+    participant S as Server
+    participant DB as Database
+    participant J as Purge job
+
+    L-&gt;&gt;S: POST /account/deactivate { password: "rahul password 123" }
+    S-&gt;&gt;DB: verify password ✓, UPDATE u_1 SET status = "deactivated"
+    S-&gt;&gt;DB: DELETE all sessions of u_1
+    S--&gt;&gt;L: 200 Account deactivated (+ email notice)
+    P-&gt;&gt;S: GET /me (sid=9c1e…)
+    S--&gt;&gt;P: 401 Not logged in
+    L-&gt;&gt;S: POST /login { email, password }
+    S-&gt;&gt;DB: password ✓, status = "active"
+    S--&gt;&gt;L: 200 { notice: "Welcome back! Your account is active again." }
+    L-&gt;&gt;S: POST /account/delete { password, confirm: "DELETE" }
+    S-&gt;&gt;DB: status = "pending_deletion", deleteAfter = +30 days
+    S-&gt;&gt;DB: DELETE all sessions of u_1
+    S--&gt;&gt;L: 202 { deleteAfter: "2026-12-05T..." } (+ email notice)
+    Note over L,J: 30 days pass, Rahul doesn't log in
+    J-&gt;&gt;DB: find pending_deletion with deleteAfter in the past
+    J-&gt;&gt;DB: DELETE user u_1, tokens, files. Orders: name → "Deleted user"
+    J-&gt;&gt;DB: INSERT audit { event: "account_erased", userId: u_1 }
+    L-&gt;&gt;S: POST /login { email, password }
+    S--&gt;&gt;L: 401 Invalid email or password
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–6: deactivating only changes the <b>status</b> and logs out every device, the phone included.</li>
+          <li>Steps 7–9: logging in with the right password <b>reactivates</b> the account.</li>
+          <li>Steps 10–13: deleting is a <b>soft delete</b> with a date. Nothing is erased yet.</li>
+          <li>Steps 14–17: the <b>purge job</b>, not the request, erases the data and keeps an id-only audit entry.</li>
+          <li>Steps 18–19: the account no longer exists, so login gives the normal "invalid" reply.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="states">
+      <h2>3. Account states</h2>
+      <p class="lead">One <code>status</code> field, four states. Only <b>active</b> users count as logged in.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Can log in and use the app</span>
+        <span class="chip"><i class="trap"></i>Switched off: data kept, can come back</span>
+        <span class="chip"><i class="error"></i>Gone for good</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    SU(["Sign up"]) --&gt; A["active"]
+    A -- "deactivate&lt;br/&gt;(password)" --&gt; D["deactivated&lt;br/&gt;data kept, hidden"]
+    D -- "log in&lt;br/&gt;(password)" --&gt; A
+    A -- "delete&lt;br/&gt;(password + DELETE)" --&gt; PD["pending_deletion&lt;br/&gt;grace period"]
+    PD -- "log in before&lt;br/&gt;deleteAfter" --&gt; A
+    PD -- "purge job after&lt;br/&gt;deleteAfter" --&gt; X["erased&lt;br/&gt;email free again"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class A ok
+    class D,PD trap
+    class X error
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Every arrow out of <b>active</b> needs the password again and logs out every device.</li>
+          <li><b>deactivated</b> and <b>pending_deletion</b> both lead back to active by logging in.</li>
+          <li>Only the purge job moves an account to <b>erased</b>, and there's no way back.</li>
+          <li>An admin "banned" status (Level 7) would be a fifth state that logging in can <b>not</b> undo.</li>
+        </ol>
+      </aside>
+      </div>
+      <p class="tip">Erasing means <b>everywhere</b>: sessions and tokens (topics 09, 13, 15), uploads, analytics and email tools. Orders and invoices the law makes you keep are <b>anonymized</b>, not deleted.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
