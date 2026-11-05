@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>35. state &amp; nonce: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 35</div>
+    <h1>state &amp; nonce: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">state and nonce notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#csrf">2. Data flow: login CSRF</a>
+    <a href="#inject">3. Data flow: code injection</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What PrintKaro's callback checks, in order. Each red exit is one attack stopped.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Refused</span>
+        <span class="chip"><i class="trap"></i>The two checks this topic is about</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    S(["GET /login"]) --&gt; G["new random state + nonce,&lt;br/&gt;saved in THIS browser's session&lt;br/&gt;with returnTo, 10 min expiry"]
+    G --&gt; AZ["redirect to /authorize&lt;br/&gt;?state=...&amp;nonce=..."]
+    AZ --&gt; CB(["GET /callback?code=...&amp;state=..."])
+    CB --&gt; ST{"state in this session,&lt;br/&gt;not expired?&lt;br/&gt;(then delete it)"}
+    ST -- "No: someone else's login,&lt;br/&gt;or a replay" --&gt; X1[/"400 state mismatch&lt;br/&gt;stops login CSRF"/]
+    ST -- Yes --&gt; T["POST /token with the code"]
+    T --&gt; V{"ID token valid?&lt;br/&gt;alg, signature, iss, aud, exp"}
+    V -- No --&gt; X2[/"400 invalid ID token"/]
+    V -- Yes --&gt; N{"id_token.nonce ==&lt;br/&gt;this session's nonce?"}
+    N -- "No: a code from a&lt;br/&gt;different login" --&gt; X3[/"400 nonce mismatch&lt;br/&gt;stops code injection"/]
+    N -- Yes --&gt; OK[/"✅ logged in, NEW session id,&lt;br/&gt;redirect to the saved returnTo"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X1,X2,X3 error
+    class OK ok
+    class ST,N trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Both values are made fresh for every login and stored on the server, next to this browser's session.</li>
+          <li><b>state</b> is checked first, from the URL. The provider never checks it; only the client can.</li>
+          <li><b>nonce</b> is checked last, from inside the ID token, and only after the token itself is verified.</li>
+          <li><code>returnTo</code> comes from the session, never from the callback URL.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="csrf">
+      <h2>2. Data flow: login CSRF</h2>
+      <p class="lead">Vikram's login, finished in Rahul's browser. <code>state</code> is what notices.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram's browser
+    actor R as Rahul's browser
+    participant PK as PrintKaro (client)
+    participant AS as PhotoVault Accounts
+
+    V-&gt;&gt;PK: GET /login
+    PK-&gt;&gt;PK: Vikram's session gets state HnKS...
+    PK--&gt;&gt;V: redirect to /authorize?state=HnKS...
+    V-&gt;&gt;AS: authorize, logged in as vikram
+    AS--&gt;&gt;V: redirect to /callback?code=XHEt...&amp;state=HnKS...
+    Note over V: Vikram does NOT open it. He sends the link to Rahul.
+    V-&gt;&gt;R: see the photos I printed for you!
+    R-&gt;&gt;PK: GET /callback?code=XHEt...&amp;state=HnKS...
+    alt naive callback, no state check
+        PK-&gt;&gt;AS: POST /token code=XHEt...
+        AS--&gt;&gt;PK: ID token, sub u_vikram
+        PK--&gt;&gt;R: logged in as u_vikram
+        Note over R,PK: Rahul's card, address and photos now go into Vikram's account
+    else safe callback
+        PK-&gt;&gt;PK: Rahul's session has no state HnKS...
+        PK--&gt;&gt;R: 400 state mismatch, not logged in
+    end
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–5: a perfectly normal login, for <b>Vikram's</b> account.</li>
+          <li>Steps 6–7: the unused callback URL is the weapon. A link, a hidden image or an auto-submitting page will do.</li>
+          <li>The <b>alt</b> box: without a state check, PrintKaro happily finishes Vikram's login in Rahul's browser. With it, Rahul's session never started that login, so it's refused before the code is even used.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="inject">
+      <h2>3. Data flow: code injection</h2>
+      <p class="lead">Rahul's code, used in Vikram's browser with Vikram's own valid state. Only <code>nonce</code> (or PKCE) notices.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul's browser
+    actor V as Vikram's browser
+    participant PK as PrintKaro (client)
+    participant AS as PhotoVault Accounts
+
+    R-&gt;&gt;PK: GET /login
+    PK-&gt;&gt;PK: Rahul's session gets state dqo4..., nonce d-WZ...
+    R-&gt;&gt;AS: authorize, logged in as rahul, nonce d-WZ...
+    AS--&gt;&gt;R: redirect to /callback?code=dnkT...&amp;state=dqo4...
+    Note over R,V: a malicious extension sends this URL to Vikram before Rahul's browser uses it
+    V-&gt;&gt;PK: GET /login (just to get his OWN state)
+    PK-&gt;&gt;PK: Vikram's session gets state fsbf..., nonce of his own
+    V-&gt;&gt;PK: GET /callback?code=dnkT... (Rahul's) &amp;state=fsbf... (Vikram's)
+    PK-&gt;&gt;PK: state fsbf... is in Vikram's session, the check PASSES
+    PK-&gt;&gt;AS: POST /token code=dnkT...
+    AS--&gt;&gt;PK: ID token, sub u_rahul, nonce d-WZ...
+    alt no-nonce callback
+        PK--&gt;&gt;V: logged in as u_rahul
+    else safe callback
+        PK-&gt;&gt;PK: nonce d-WZ... is not Vikram's session nonce
+        PK--&gt;&gt;V: 400 nonce mismatch, not logged in
+    end
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: Rahul's normal login. The nonce goes into the code's record at PhotoVault.</li>
+          <li>Steps 5–9: Vikram pairs <b>Rahul's code</b> with <b>his own state</b>, so the state check can't help.</li>
+          <li>Steps 10–11: the ID token carries <b>Rahul's</b> nonce, inside the signature.</li>
+          <li>The <b>alt</b> box: comparing that nonce with the session's nonce is what catches it. PKCE would also stop it, at <code>/token</code>.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
