@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>36. OpenID Connect: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 36</div>
+    <h1>OpenID Connect (OIDC): Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">OpenID Connect notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#anatomy">3. ID token vs access token</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What PrintKaro does with the token response, from the ID token to a logged-in account.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Login refused</span>
+        <span class="chip"><i class="trap"></i>Where beginners slip</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["token response:&lt;br/&gt;access_token + id_token"]) --&gt; K["read kid from the header&lt;br/&gt;(decode only, trust nothing yet)"]
+    K --&gt; J{"kid in the cached JWKS?"}
+    J -- No --&gt; RF["refetch JWKS once,&lt;br/&gt;from the DISCOVERED jwks_uri"]
+    RF --&gt; J2{"found now?"}
+    J2 -- No --&gt; X[/"login refused&lt;br/&gt;+ log the reason"/]
+    J -- Yes --&gt; V
+    J2 -- Yes --&gt; V{"jwt.verify: RS256 pinned,&lt;br/&gt;signature, iss, aud = printkaro,&lt;br/&gt;exp (± 30 s)"}
+    V -- No --&gt; X
+    V -- Yes --&gt; N{"nonce = this session's nonce?"}
+    N -- No --&gt; X
+    N -- Yes --&gt; U{"optional /userinfo&lt;br/&gt;with the ACCESS token:&lt;br/&gt;same sub?"}
+    U -- No --&gt; X
+    U -- Yes --&gt; F{"account with&lt;br/&gt;iss + sub exists?"}
+    F -- "Yes: returning user" --&gt; OK[/"✅ update the profile copy,&lt;br/&gt;new session id"/]
+    F -- "No: first login" --&gt; NEW["create account keyed by iss + sub&lt;br/&gt;(NOT by email)"]
+    NEW --&gt; OK
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X error
+    class OK ok
+    class K,NEW trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Decoding is only used to find the <code>kid</code>. Nothing in the token is trusted until <code>jwt.verify</code> passes.</li>
+          <li>Keys come only from the <code>jwks_uri</code> found by discovery, never from a URL inside the token.</li>
+          <li>The <code>aud</code> check is what makes this <b>login</b>: the token was made for PrintKaro, not for some other app.</li>
+          <li>The account is found by <b>iss + sub</b>. Email and name are just a copy that gets refreshed.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul clicks "Log in with PhotoVault" on PrintKaro. Discovery, JWKS and userinfo are the parts OIDC adds to OAuth.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor B as Rahul's browser
+    participant RP as PrintKaro (relying party)
+    participant OP as PhotoVault (OpenID provider)
+
+    RP-&gt;&gt;OP: GET /.well-known/openid-configuration
+    OP--&gt;&gt;RP: issuer, authorization_endpoint, token_endpoint, userinfo_endpoint, jwks_uri
+    B-&gt;&gt;RP: GET /login
+    RP-&gt;&gt;RP: save state, nonce, PKCE verifier in the session
+    RP--&gt;&gt;B: redirect to /authorize?scope=openid profile email, state, nonce, code_challenge
+    B-&gt;&gt;OP: authorize (Rahul logs in at PhotoVault)
+    OP--&gt;&gt;B: redirect to /callback?code=NKJS...&amp;state=kz1T...
+    B-&gt;&gt;RP: GET /callback?code=NKJS...&amp;state=kz1T...
+    RP-&gt;&gt;OP: POST /token code + client secret + code_verifier
+    OP--&gt;&gt;RP: access_token + id_token (RS256, kid pv-9b--Fct_)
+    RP-&gt;&gt;OP: GET /jwks.json (first time, or unknown kid)
+    OP--&gt;&gt;RP: public key pv-9b--Fct_
+    RP-&gt;&gt;RP: verify id_token, check iss, aud, exp, nonce
+    RP-&gt;&gt;OP: GET /userinfo (Bearer access_token)
+    OP--&gt;&gt;RP: sub 248289761001, name, email, email_verified
+    RP-&gt;&gt;RP: same sub, find account by iss + sub (acct_-5UyaA)
+    RP--&gt;&gt;B: 303 to /me with a NEW session cookie
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: discovery. PrintKaro only knows PhotoVault's issuer URL; everything else comes from here.</li>
+          <li>Steps 3–10: the OAuth code flow from topics 33–35, with <code>openid</code> in the scope, so the token response also has an <b>id_token</b>.</li>
+          <li>Steps 11–13: the public key from JWKS verifies the ID token.</li>
+          <li>Steps 14–16: <code>/userinfo</code> is optional. It takes the access token, and its <code>sub</code> must match.</li>
+          <li>Step 17: from now on, PrintKaro's own session keeps Rahul logged in.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="anatomy">
+      <h2>3. ID token vs access token</h2>
+      <p class="lead">One response, two tokens, two different readers.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Right use</span>
+        <span class="chip"><i class="error"></i>Wrong use</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    I(["ID token (always a JWT)"]) --&gt; I1["aud = printkaro (the APP)&lt;br/&gt;iss, sub, exp, iat,&lt;br/&gt;auth_time, nonce, email..."]
+    I1 --&gt; I2[/"PrintKaro verifies it once,&lt;br/&gt;then starts its own session"/]
+    I1 -. "sent to an API" .-&gt; I3[/"wrong: aud is not the API"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class I2 ok
+    class I3 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    T(["Access token (any format)"]) --&gt; T1["for an API, scopes&lt;br/&gt;openid profile email"]
+    T1 --&gt; T2[/"sent to /userinfo or an API&lt;br/&gt;as Authorization: Bearer"/]
+    T1 -. "used as proof of login" .-&gt; T3[/"wrong: token substitution,&lt;br/&gt;it may be meant for another app"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class T2 ok
+    class T3 error
+</pre></div>
+      </div>
+      <p class="tip">The ID token answers <b>who logged in, for this app</b>. The access token answers <b>what may be done at an API</b>. After login, neither replaces your own session.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
