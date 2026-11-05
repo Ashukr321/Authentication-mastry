@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>41. Auth Libraries: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 5 · TOPIC 41</div>
+    <h1>Auth Libraries: Passport.js / Auth.js / Spring Security: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">auth libraries notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow: Auth.js sign-in</a>
+    <a href="#passport">3. Passport's moving parts</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the library does for you, and the few places where your own code plugs in.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Done by the library</span>
+        <span class="chip"><i class="trap"></i>Your code / your settings</span>
+        <span class="chip"><i class="error"></i>Refused by the library</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["user clicks Log in"]) --&gt; B["build the login URL&lt;br/&gt;PKCE, state, nonce,&lt;br/&gt;exact redirect_uri"]
+    B --&gt; C["provider: login + consent"]
+    C --&gt; D(["callback with code"])
+    D --&gt; E{"PKCE verifier / state&lt;br/&gt;from THIS session?"}
+    E -- No --&gt; X1[/"failureRedirect or error page"/]
+    E -- Yes --&gt; F["exchange code at token endpoint&lt;br/&gt;(client auth)"]
+    F --&gt; G{"ID token valid?&lt;br/&gt;JWKS, alg, iss, aud, exp, nonce"}
+    G -- No --&gt; X1
+    G -- Yes --&gt; H["YOUR code: verify() / jwt callback&lt;br/&gt;find or create the account (topic 40)"]
+    H --&gt; I["session: regenerate id,&lt;br/&gt;set the cookie"]
+    I --&gt; J["YOUR routes: req.user / getSession()&lt;br/&gt;authorization"]
+    S["YOUR settings: secrets, cookie secure,&lt;br/&gt;session store, hostname, updates"] -.-&gt; B
+    S -.-&gt; I
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X1 error
+    class B,E,F,G,I ok
+    class H,J,S trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Green boxes are the protocol work from topics 33 to 36. The library does them.</li>
+          <li>Yellow boxes are still yours: mapping the provider's user to your account, authorization, and configuration.</li>
+          <li>The dotted lines: your settings shape how the library behaves (wrong secret, insecure cookies or a trusted <code>Host</code> header undo its protection).</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow: Auth.js sign-in</h2>
+      <p class="lead">The CSRF token, the cookies, and where your callbacks run. Values are from the demo.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul's browser
+    participant A as Auth.js at /auth
+    participant K as KaroID
+    participant Y as Your callbacks
+
+    R-&gt;&gt;A: GET /auth/csrf
+    A--&gt;&gt;R: csrfToken 99bc12..., cookie authjs.csrf-token = token + hash
+    R-&gt;&gt;A: POST /auth/signin/karoid csrfToken=99bc12... callbackUrl=/authjs/me
+    A-&gt;&gt;A: token matches the cookie? callbackUrl same site?
+    A--&gt;&gt;R: 302 to KaroID with state, nonce, code_challenge, cookies for pkce/state/nonce
+    R-&gt;&gt;K: authorize, Continue as rahul
+    K--&gt;&gt;R: 302 /auth/callback/karoid?code=rQkG...&amp;state=...
+    R-&gt;&gt;A: GET /auth/callback/karoid (with the pkce/state/nonce cookies)
+    A-&gt;&gt;K: POST /token code + code_verifier (client_secret_basic)
+    K--&gt;&gt;A: id_token (sub kr_7Hq2LmV9), access_token
+    A-&gt;&gt;A: verify id_token: JWKS, iss, aud, exp, nonce
+    A-&gt;&gt;Y: jwt callback with account + profile
+    Y--&gt;&gt;A: token.appUserId = acct_5gLc7A
+    A--&gt;&gt;R: 302 /authjs/me, cookie authjs.session-token (encrypted JWE, 30 days)
+    R-&gt;&gt;A: GET /auth/session
+    A-&gt;&gt;Y: session callback
+    A--&gt;&gt;R: user id acct_5gLc7A, name Rahul Sharma
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1 to 4: sign-in is a POST with a CSRF token checked against a cookie, so another site can't start it.</li>
+          <li>Steps 9 to 11: the protocol checks, all inside the library.</li>
+          <li>Steps 12 and 13: your code. This is where the provider's user becomes your account.</li>
+          <li>Step 14: with the default JWT strategy the session itself is in the cookie, encrypted with <code>AUTH_SECRET</code>.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="passport">
+      <h2>3. Passport's moving parts</h2>
+      <p class="lead">Left: logging in once. Right: every request after that.</p>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    L(["GET /passport/callback"]) --&gt; S["Strategy (openid-client)&lt;br/&gt;code + PKCE, verify ID token"]
+    S --&gt; V["verify(tokens, verified)&lt;br/&gt;YOUR findOrCreateUser"]
+    V --&gt; LI["req.login: regenerate session id"]
+    LI --&gt; SE["serializeUser: store user.id&lt;br/&gt;in the session"]
+    SE --&gt; ST[("session store&lt;br/&gt;MemoryStore in the demo,&lt;br/&gt;Redis in production")]
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class S,LI ok
+    class V,SE,ST trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    Q(["any request, cookie pk.sid"]) --&gt; SS["express-session&lt;br/&gt;load the session"]
+    SS --&gt; D["deserializeUser(id)&lt;br/&gt;YOUR user lookup"]
+    D --&gt; U["req.user, req.isAuthenticated()"]
+    U --&gt; R["your route"]
+    O(["POST /passport/logout"]) --&gt; LO["req.logout(callback)&lt;br/&gt;clears user, regenerates session"]
+
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class SS,LO ok
+    class D,R trap
+</pre></div>
+      </div>
+      <p class="tip">Passport gives you the pieces, not the whole house: you choose the strategy, write <code>verify</code> and <code>deserializeUser</code>, pick the session store and the cookie flags. Auth.js and Spring Security come with more of this already built.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

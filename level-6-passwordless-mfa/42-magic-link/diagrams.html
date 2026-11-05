@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>42. Magic Link Login: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 6 · TOPIC 42</div>
+    <h1>Magic Link Login: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">magic link notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#attacks">3. Attacks</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check from "type your email" to "you're logged in". Three requests: <code>POST /auth/magic-link</code>, <code>GET /auth/verify</code>, <code>POST /auth/verify</code>.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="trap"></i>Careful step: nothing used up, or the same reply for everyone</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["step 1: POST /auth/magic-link&lt;br/&gt;{ email, next }"]) --&gt; B{"Over 10 requests&lt;br/&gt;from this IP in 15 min?"}
+    B -- Yes --&gt; E0[/"429 Too many requests"/]
+    B -- No --&gt; C["Set ml_attempt cookie&lt;br/&gt;(binds the link to this browser)"]
+    C --&gt; D{"Email sent to this&lt;br/&gt;address in the last minute?"}
+    D -- Yes --&gt; R["Send nothing"]
+    D -- No --&gt; T["Kill old links, token = randomBytes(32)&lt;br/&gt;store sha256(token), email, next, +15 min&lt;br/&gt;email the link"]
+    T --&gt; R2[/"202: If that email can sign in,&lt;br/&gt;a link is on its way"/]
+    R --&gt; R2
+    R2 -.-&gt; G(["step 2: user opens the link&lt;br/&gt;GET /auth/verify?token=…"])
+    G --&gt; H{"Token found&lt;br/&gt;and not expired?"}
+    H -- No --&gt; E1[/"400 This link is invalid or has expired"/]
+    H -- Yes --&gt; P["Confirm page: Sign in as Rahul?&lt;br/&gt;warning if ml_attempt doesn't match&lt;br/&gt;token NOT deleted"]
+    P --&gt; Q(["step 3: user presses the button&lt;br/&gt;POST /auth/verify token=…"])
+    Q --&gt; O{"Origin header is&lt;br/&gt;another site?"}
+    O -- Yes --&gt; E2[/"403 Cross-site request refused"/]
+    O -- No --&gt; F{"sha256(token)&lt;br/&gt;found?"}
+    F -- "No: fake or already used" --&gt; E1
+    F -- Yes --&gt; X["DELETE the token now"]
+    X --&gt; Y{"Expired?"}
+    Y -- Yes --&gt; E1
+    Y -- No --&gt; U["Find the user, or create one&lt;br/&gt;with emailVerified = true&lt;br/&gt;delete their other links"]
+    U --&gt; S["New random session id&lt;br/&gt;store sha256(sid)"]
+    S --&gt; OK[/"303 to next (/orders)&lt;br/&gt;Set-Cookie: sid (HttpOnly, SameSite=Lax)"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E0,E1,E2 error
+    class OK,T ok
+    class R,R2,P,X trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Step 1</b> (top): the IP limit runs first. The <b>email cooldown</b> decides whether an email is sent, but the reply is the <b>same 202</b> either way.</li>
+          <li><b>Step 2</b>: opening the link (a GET) only shows a <b>confirm page</b>. The token stays alive, so an email scanner that opens links can't burn it.</li>
+          <li><b>Step 3</b>: only the <b>button</b> (a POST) logs in. A foreign <code>Origin</code> is refused (login CSRF).</li>
+          <li>The token is <b>deleted before the expiry check</b>, so it can never be used twice.</li>
+          <li>Every bad token ends in the <b>same red box</b>: fake, used and expired look identical.</li>
+        </ol>
+        <p class="tip">Clicking proves Rahul owns the inbox, so a brand-new user is created <b>already verified</b>. Sign-up and sign-in are the same flow.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul signs in to PrintKaro on his laptop with no password. Real requests, cookies and payloads.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Rahul
+    participant B as Laptop browser
+    participant S as PrintKaro server
+    participant DB as Database
+    participant M as Rahul's inbox
+
+    U-&gt;&gt;B: Types his email, presses "Email me a sign-in link"
+    B-&gt;&gt;S: POST /auth/magic-link { email: Rahul's, next: "/orders" }
+    Note over S: IP limit OK, no email in the last minute&lt;br/&gt;token = randomBytes(32) → "j9Qe…pqlo"&lt;br/&gt;attempt = randomBytes(32) → "siwq…a08"
+    S-&gt;&gt;DB: DELETE old links for Rahul, INSERT { sha256("j9Qe…"), email, sha256("siwq…"), next: "/orders", expiresAt: +15 min }
+    S-&gt;&gt;M: "Your sign-in link" + printkaro.in/auth/verify?token=j9Qe…pqlo
+    S--&gt;&gt;B: 202 "a link is on its way" + Set-Cookie: ml_attempt=siwq…a08 (HttpOnly, 15 min)
+    M-&gt;&gt;S: Mail scanner opens the link first: GET /auth/verify?token=j9Qe…
+    S--&gt;&gt;M: 200 confirm page (token NOT used, scanner can't press buttons)
+    U-&gt;&gt;M: Opens the email, clicks the link in the laptop browser
+    B-&gt;&gt;S: GET /auth/verify?token=j9Qe… (cookie ml_attempt=siwq…)
+    S-&gt;&gt;DB: Find sha256("j9Qe…") (do NOT delete)
+    Note over S: attempt hash matches → same browser, no warning
+    S--&gt;&gt;B: 200 "Sign in to PrintKaro as Rahul?" [Sign in] (Referrer-Policy: strict-origin)
+    U-&gt;&gt;B: Presses "Sign in"
+    B-&gt;&gt;S: POST /auth/verify token=j9Qe… (Origin: printkaro.in)
+    S-&gt;&gt;DB: Find + DELETE sha256("j9Qe…"), not expired ✓
+    S-&gt;&gt;DB: Find Rahul, or INSERT { id: "u_1", emailVerified: true }
+    S-&gt;&gt;DB: INSERT session { sha256(sid), userId: "u_1", expiresAt: +7 days }
+    S--&gt;&gt;B: 303 Location: /orders + Set-Cookie: sid=RbrS… (HttpOnly, SameSite=Lax), ml_attempt cleared
+    B-&gt;&gt;S: GET /orders (cookie sid=RbrS…)
+    S--&gt;&gt;B: 200 Rahul's orders ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 4: the database gets only <b>hashes</b>. The plain token goes only into the email (step 5); the plain attempt id only into Rahul's cookie (step 6).</li>
+          <li>Steps 7–8: the <b>mail scanner</b> opens the link before Rahul does. Because GET only shows a page, nothing is used up.</li>
+          <li>Step 12: the <code>ml_attempt</code> cookie proves this is the <b>same browser</b> that asked.</li>
+          <li>Step 16: the token is found and <b>deleted in one go</b>. Step 19: a <b>brand-new</b> session id, and the <code>next</code> page came from the server, not from the link.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="attacks">
+      <h2>3. Attacks and the check that stops each one</h2>
+      <p class="lead">Left: Vikram sends Rahul a link to <b>Vikram's</b> account (login CSRF). Right: a naive app that logs in on GET.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Stopped</span>
+        <span class="chip"><i class="error"></i>Goes wrong</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    V(["Vikram asks for a link&lt;br/&gt;for HIS OWN email"]) --&gt; L["Sends it to Rahul:&lt;br/&gt;'Diwali sale, click here!'"]
+    L --&gt; W{"How does it reach&lt;br/&gt;PrintKaro?"}
+    W -- "Hidden auto-submit form&lt;br/&gt;on Vikram's site" --&gt; O["POST /auth/verify&lt;br/&gt;Origin: Vikram's site"]
+    O --&gt; S1[/"403 refused by the Origin check"/]
+    W -- "Rahul opens the link" --&gt; G["GET confirm page"]
+    G --&gt; S2[/"Sign in as VIKRAM's email?&lt;br/&gt;+ warning: requested from&lt;br/&gt;a different browser"/]
+    S2 --&gt; N["Rahul sees it isn't his&lt;br/&gt;account and closes it"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class S1,S2,N ok
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    E(["Email with a sign-in link&lt;br/&gt;arrives in a work inbox"]) --&gt; SC["Safe Links scanner&lt;br/&gt;opens every link: GET"]
+    SC --&gt; NA{"Naive app:&lt;br/&gt;GET logs in?"}
+    NA -- Yes --&gt; B1["Token deleted,&lt;br/&gt;session made for the scanner"]
+    B1 --&gt; B2[/"Rahul clicks:&lt;br/&gt;'link expired' 😤"/]
+    NA -- "No: PrintKaro" --&gt; C1["GET only shows&lt;br/&gt;the confirm page"]
+    C1 --&gt; C2[/"Rahul clicks, presses&lt;br/&gt;the button: logged in ✓"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class B1,B2 error
+    class C1,C2 ok
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Left, login CSRF:</b> if it worked, Rahul would be logged in as Vikram and might save his card or address into Vikram's account.</li>
+          <li>The auto-submitted form is stopped by the <b>Origin check</b> on the POST.</li>
+          <li>The link Rahul opens himself is stopped by a human: the confirm page shows <b>whose account</b> it is and that it was <b>requested elsewhere</b>.</li>
+          <li><b>Right, link scanners:</b> because scanners only <b>GET</b>, the rule "GET never logs in" keeps the single-use token for the real user.</li>
+        </ol>
+        <p class="tip">Also blocked by the code: <code>next: "//evil.com"</code> becomes <code>/</code> (open redirect), the 11th request from one IP gets <code>429</code>, and a second email to Rahul within a minute is silently skipped.</p>
+      </aside>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

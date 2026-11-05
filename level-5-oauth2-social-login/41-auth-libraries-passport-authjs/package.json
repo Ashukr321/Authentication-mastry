@@ -1,0 +1,14 @@
+{
+  "name": "41-auth-libraries-passport-authjs",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@auth/express": "^0.12.3",
+    "express": "^5.1.0",
+    "express-session": "^1.19.0",
+    "openid-client": "^6.8.9",
+    "passport": "^0.7.0"
+  }
+}
