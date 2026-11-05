@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>26. Multi-Device Sessions: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 3 · TOPIC 26</div>
+    <h1>Multi-Device Sessions: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">multi-device sessions notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#pieces">3. How the pieces connect</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What happens at <b>login</b> when the user already has other devices</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Rejected / logged out</span>
+        <span class="chip"><i class="trap"></i>Side effect: email or kicked device</span>
+        <span class="chip"><i class="db"></i>Session table</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /auth/login&lt;br/&gt;User-Agent: Smart TV app"]) --&gt; P{"Password&lt;br/&gt;correct?"}
+    P -- No --&gt; E[/"401 Invalid email or password"/]
+    P -- Yes --&gt; L[("Load this user's sessions")]
+    L --&gt; N{"Device seen&lt;br/&gt;before?"}
+    N -- "No (and not the first login)" --&gt; M["📧 New sign-in on Smart TV app"]
+    N -- Yes --&gt; C
+    M --&gt; C{"Sessions ≥&lt;br/&gt;MAX_DEVICES (3)?"}
+    C -- Yes --&gt; K["🔌 Revoke the LEAST&lt;br/&gt;recently used session"]
+    C -- No --&gt; S
+    K --&gt; S["INSERT session&lt;br/&gt;id, device, ip, lastUsedAt,&lt;br/&gt;sha256(refreshToken)"]
+    S --&gt; OK[/"200 accessToken with sid&lt;br/&gt;+ refresh cookie"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E error
+    class OK ok
+    class M,K trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Every successful login creates a <b>new session row</b> for that device.</li>
+          <li>The <b>yellow</b> boxes are side effects: an alert for an unknown device, and the device limit.</li>
+          <li>At the limit, the device used <b>least recently</b> goes, not the one created first.</li>
+          <li>The access token carries the session id as <code>sid</code>, so this device can be revoked on its own later.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul is logged in on a laptop, a phone and a tablet. From the laptop he opens "Your devices" and logs out the tablet.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant L as Laptop
+    participant T as Tablet
+    participant S as Server
+    participant DB as Sessions + revoked list
+
+    Note over L,T: earlier: 3 logins → 3 session rows (laptop 2418…, phone 68d0…, tablet 6e5d…)
+    L-&gt;&gt;S: GET /sessions (Bearer, sid 2418…)
+    S-&gt;&gt;DB: rows where userId = Rahul
+    S--&gt;&gt;L: devices: tablet, phone, laptop (current: true)
+    L-&gt;&gt;S: DELETE /sessions/6e5d… (Bearer, sid 2418…)
+    S-&gt;&gt;DB: row 6e5d… belongs to Rahul ✓
+    S-&gt;&gt;DB: DELETE row 6e5d…, revoked[6e5d…] for 15 min
+    S--&gt;&gt;L: 200 Logged out "Chrome on Android tablet"
+    T-&gt;&gt;S: GET /me (Bearer, sid 6e5d…)
+    S-&gt;&gt;DB: 6e5d… is revoked
+    S--&gt;&gt;T: 401 session_revoked
+    T-&gt;&gt;S: POST /auth/refresh (cookie)
+    S-&gt;&gt;DB: no row with this refresh token hash
+    S--&gt;&gt;T: 401 This device is logged out
+    Note over L: the laptop and the phone keep working
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–3: "Your devices" lists the rows. <code>current</code> comes from the <code>sid</code> in the caller's token.</li>
+          <li>Steps 4–7: the owner check, then two things: the row is deleted and the <code>sid</code> goes on the revoked list.</li>
+          <li>Steps 8–10: the tablet's access token fails <b>right away</b>, not after 15 minutes.</li>
+          <li>Steps 11–13: the tablet can't refresh either, so it must log in again.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="pieces">
+      <h2>3. How the pieces connect</h2>
+      <p class="lead">One session row per device. The refresh token and every access token point back to it.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Secret: never shown</span>
+        <span class="chip"><i class="trap"></i>Public: safe to show and use in URLs</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    R(["Session row 6e5d…&lt;br/&gt;Chrome on Android tablet&lt;br/&gt;lastUsedAt, ip"]) --&gt; RT[/"Refresh token&lt;br/&gt;stored as sha256 in the row,&lt;br/&gt;HttpOnly cookie on the tablet"/]
+    R --&gt; AT[/"Access tokens&lt;br/&gt;claim sid = 6e5d…"/]
+    R --&gt; UI["Your devices page:&lt;br/&gt;id, device, ip, last used"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class RT ok
+    class UI trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    E(["Event"]) --&gt; A1["Log out this device:&lt;br/&gt;revoke my sid"]
+    E --&gt; A2["DELETE /sessions/:id:&lt;br/&gt;revoke one, if it's mine"]
+    E --&gt; A3["Log out other devices:&lt;br/&gt;revoke all except my sid"]
+    E --&gt; A4["Password change / reset:&lt;br/&gt;revoke all (maybe keep mine)"]
+</pre></div>
+      </div>
+      <p class="tip">Revoking a session = delete the row (the refresh token dies) + put its <code>sid</code> on a revoked list for one access token lifetime (its access tokens die). The table is touched at login, refresh and logout, not on every request.</p>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
