@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>45. MFA Flow: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 6 · TOPIC 45</div>
+    <h1>MFA Flow: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">MFA flow notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Login flow</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#stepup">3. Step-up</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Login flow</h2>
+      <p class="lead">Everything that can happen from "type your password" to "you're in". Three requests: <code>POST /login</code>, (maybe) <code>POST /login/mfa/email</code>, <code>POST /login/mfa</code>.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Session created</span>
+        <span class="chip"><i class="error"></i>Error: no session</span>
+        <span class="chip"><i class="trap"></i>In between: a ticket, not a session</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /login&lt;br/&gt;{ email, password }"]) --&gt; B{"Password&lt;br/&gt;correct?"}
+    B -- No --&gt; E1[/"401 Invalid email or password"/]
+    B -- Yes --&gt; C{"Any second factor&lt;br/&gt;set up?"}
+    C -- No --&gt; S0[/"Session&lt;br/&gt;amr: pwd"/]
+    C -- Yes --&gt; D{"td cookie: valid, unexpired,&lt;br/&gt;belongs to THIS user?"}
+    D -- Yes --&gt; S1[/"Session, code skipped&lt;br/&gt;amr: pwd, mfaAt: null&lt;br/&gt;viaTrustedDevice: true"/]
+    D -- No --&gt; T["mfaToken: 5 min, one use&lt;br/&gt;methods: totp, email_otp,&lt;br/&gt;recovery_code"]
+    T --&gt; M{"Which method?"}
+    M -- "email_otp" --&gt; EM["POST /login/mfa/email&lt;br/&gt;6-digit code by email&lt;br/&gt;(60 s cooldown)"]
+    EM --&gt; V
+    M -- "totp or&lt;br/&gt;recovery_code" --&gt; V["POST /login/mfa&lt;br/&gt;attempts + 1 first"]
+    V --&gt; H{"10 wrong codes for&lt;br/&gt;this user this hour?"}
+    H -- Yes --&gt; E3[/"429 Try again in an hour"/]
+    H -- No --&gt; W{"Code right?"}
+    W -- No --&gt; X{"5 tries used?"}
+    X -- No --&gt; E2[/"401 Wrong code, attemptsLeft"/]
+    E2 -.-&gt; V
+    X -- Yes --&gt; E4[/"Ticket deleted:&lt;br/&gt;back to the password"/]
+    W -- Yes --&gt; S2[/"Delete ticket, NEW session&lt;br/&gt;amr: pwd + method&lt;br/&gt;mfaAt: now"/]
+    S2 --&gt; R{"rememberDevice&lt;br/&gt;and not a recovery code?"}
+    R -- Yes --&gt; TD["Set td cookie&lt;br/&gt;(Path=/login, 30 days)"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4 error
+    class S0,S1,S2,TD ok
+    class T,EM trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>password</b> is always checked first. Codes are only sent after that, so nobody can spam Rahul's inbox with just his email.</li>
+          <li>A valid <b>trusted-device</b> cookie skips the code, but the session gets <code>mfaAt: null</code>. That matters for step-up (section 3).</li>
+          <li>The <b>yellow</b> ticket is not a session: it can't open any page, only be traded for one with a factor.</li>
+          <li>Two limits: <b>5 tries per ticket</b>, and <b>10 per user per hour</b> across all tickets.</li>
+          <li>Success records <b>how</b> (<code>amr</code>) and <b>when</b> (<code>mfaAt</code>), and can remember the device.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Monday: Rahul logs in with a TOTP code and ticks "remember this device". Thursday: same laptop, no code needed.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Rahul
+    participant B as Laptop browser
+    participant S as PrintKaro server
+    participant DB as Database
+    participant Ph as Authenticator app
+
+    Note over U,Ph: Monday
+    B-&gt;&gt;S: POST /login { email, password }
+    S-&gt;&gt;DB: scrypt check ✓, methods: totp, email_otp, recovery_code
+    Note over S: no td cookie → MFA needed
+    S-&gt;&gt;DB: INSERT ticket { sha256(mfaToken), userId, +5 min, attempts: 0 }
+    S--&gt;&gt;B: 200 { mfaRequired: true, mfaToken: "1816…", methods: [totp, email_otp, recovery_code] }
+    U-&gt;&gt;Ph: Opens the app
+    Ph--&gt;&gt;U: 471168
+    B-&gt;&gt;S: POST /login/mfa { mfaToken, method: "totp", code: "471168", rememberDevice: true }
+    S-&gt;&gt;DB: attempts + 1, TOTP ✓ (step not used before), DELETE ticket
+    S-&gt;&gt;DB: INSERT session { amr: [pwd, totp], mfaAt: now }
+    S-&gt;&gt;DB: INSERT trusted device { sha256(td), userId, "Chrome on Windows", +30 days }
+    S--&gt;&gt;B: 200 + Set-Cookie: sid=t0n2… (Path=/) + Set-Cookie: td=SXIf… (Path=/login, 30 days)
+    Note over U,Ph: Thursday: logged out, logs in again
+    B-&gt;&gt;S: POST /login { email, password } + cookie td=SXIf…
+    S-&gt;&gt;DB: scrypt check ✓, find sha256("SXIf…")
+    DB--&gt;&gt;S: { userId: Rahul ✓, expires in 26 days ✓ }
+    S-&gt;&gt;DB: INSERT session { amr: [pwd], mfaAt: null, viaTrustedDevice: true }
+    S--&gt;&gt;B: 200 "Trusted device: 2FA skipped" + Set-Cookie: sid=…
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one part of the system. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Step 5: the password gives only a <b>ticket</b>. No session cookie yet.</li>
+          <li>Step 9: the ticket is <b>deleted</b> as soon as it's used, and the TOTP step is marked used (no replay).</li>
+          <li>Step 12: two cookies. <code>sid</code> goes everywhere; <code>td</code> only to <code>/login</code>. Both are random and stored hashed.</li>
+          <li>Steps 13–17: the device is found <b>and</b> belongs to Rahul, so the code is skipped. The password was still needed.</li>
+        </ol>
+        <p class="tip">Rahul changes his password because he thinks it leaked? Delete all his trusted devices too, or the attacker's laptop stays trusted.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="stepup">
+      <h2>3. Step-up: logged in is not enough</h2>
+      <p class="lead">Thursday's trusted-device session wants to change where PrintKaro sends Rahul's money: <code>POST /account/payout</code>.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Action allowed</span>
+        <span class="chip"><i class="error"></i>Blocked: confirm first</span>
+        <span class="chip"><i class="trap"></i>The step-up</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /account/payout&lt;br/&gt;{ upiId: rahul@okicici }"]) --&gt; B{"Signed in?"}
+    B -- No --&gt; E0[/"401 Not signed in"/]
+    B -- Yes --&gt; C{"mfaAt set and&lt;br/&gt;less than 5 min ago?"}
+    C -- Yes --&gt; OK[/"200 Payout UPI ID saved&lt;br/&gt;+ email: your payout was changed"/]
+    C -- "No: trusted-device login,&lt;br/&gt;or MFA was days ago" --&gt; E1[/"403 Please confirm it's you&lt;br/&gt;stepUpRequired: true, methods"/]
+    E1 --&gt; F["Frontend shows the code box&lt;br/&gt;(email code: POST /step-up/email first)"]
+    F --&gt; G["POST /step-up&lt;br/&gt;{ method, code }"]
+    G --&gt; H{"Code right?&lt;br/&gt;(same limits as login)"}
+    H -- No --&gt; E2[/"401 Wrong code, attemptsLeft"/]
+    H -- Yes --&gt; U["session.mfaAt = now&lt;br/&gt;amr gets the method added"]
+    U -. "retry" .-&gt; A
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E0,E1,E2 error
+    class OK ok
+    class F,G,U trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The check is <b>time-based</b>: <code>mfaAt</code> must be recent, not just "this session once passed MFA".</li>
+          <li>A trusted-device login has <code>mfaAt: null</code>, so it <b>always</b> has to step up first.</li>
+          <li>The <code>403</code> says <b>which methods</b> work, so the frontend can show the right box.</li>
+          <li>Step-up updates the <b>same session</b>. No new login, just a fresh <code>mfaAt</code>.</li>
+          <li>The action itself also sends an <b>alert email</b>, so if it wasn't Rahul, he finds out right away.</li>
+        </ol>
+        <p class="tip">Also protect this way: changing email, phone or password, turning 2FA off, recovery codes, API keys, deleting the account, forgetting trusted devices.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
