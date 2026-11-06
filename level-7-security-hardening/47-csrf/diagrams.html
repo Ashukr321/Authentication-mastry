@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>47. CSRF: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 47</div>
+    <h1>CSRF: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">CSRF notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#defenses">3. Which defense stops what</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check a request to <code>POST /transfer</code> passes before PaisaPay moves money. The cheap header checks run first, the token check last.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Success</span>
+        <span class="chip"><i class="error"></i>Error: the server stops here</span>
+        <span class="chip"><i class="trap"></i>Careful step: the browser decides, not your code</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /transfer&lt;br/&gt;to=vikram, amount=5000"]) --&gt; C{"Browser: attach the sid cookie?&lt;br/&gt;(SameSite=Lax)"}
+    C -- "Cross-site POST: no cookie" --&gt; N[/"401 Not signed in"/]
+    C -- "Same-site or same-origin: cookie sent" --&gt; F{"Sec-Fetch-Site is&lt;br/&gt;same-origin or none?"}
+    F -- "No: same-site / cross-site" --&gt; E1[/"403 request came from another site"/]
+    F -- "Yes, or header missing" --&gt; O{"Origin missing or&lt;br/&gt;exactly our BASE_URL?"}
+    O -- No --&gt; E2[/"403 Origin is not ours"/]
+    O -- Yes --&gt; S{"Valid session?"}
+    S -- No --&gt; N
+    S -- Yes --&gt; T{"_csrf field or X-CSRF-Token&lt;br/&gt;equals session.csrfToken?&lt;br/&gt;(timingSafeEqual)"}
+    T -- "No / missing" --&gt; E3[/"403 missing or wrong CSRF token"/]
+    T -- Yes --&gt; V{"Amount valid,&lt;br/&gt;recipient exists,&lt;br/&gt;enough balance?"}
+    V -- No --&gt; E4[/"400"/]
+    V -- Yes --&gt; OK[/"200 Sent ₹5000"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class N,E1,E2,E3,E4 error
+    class OK ok
+    class C trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>yellow</b> box happens in the browser: <code>SameSite=Lax</code> keeps the cookie off cross-site POSTs. A <b>same-site</b> attacker (a subdomain, another port) still gets it attached.</li>
+          <li><b>Sec-Fetch-Site</b> is the check that refuses those same-site attackers.</li>
+          <li><b>Origin</b> must be an exact match with our own configured origin. <code>null</code> is refused.</li>
+          <li>The <b>CSRF token</b> is the last word: a forged form never has it, because the attacker can't read our pages.</li>
+          <li>Only then does the business logic (amount, balance) run.</li>
+        </ol>
+        <p class="tip">curl sends no <code>Origin</code> or <code>Sec-Fetch-Site</code>, so it passes the header checks. It still needs the token. That's why the token is the layer that always runs.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul is logged in to PaisaPay and opens Vikram's "you won a prize" page in another tab. Real headers from our test run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor U as Rahul
+    participant B as Rahul's browser
+    participant P as PaisaPay (localhost:3047)
+    participant E as Vikram's page (localhost:3048)
+
+    U-&gt;&gt;B: Logs in as Rahul
+    B-&gt;&gt;P: POST /login { email, password }
+    Note over P: new session { email, csrfToken: "aIXI…BIs" }
+    P--&gt;&gt;B: Set-Cookie: sid=SkqI… (HttpOnly, SameSite=Lax)
+    B-&gt;&gt;P: GET /
+    P--&gt;&gt;B: Home page with a hidden field _csrf=aIXI…BIs
+    U-&gt;&gt;B: Sends ₹100 with the real form
+    B-&gt;&gt;P: POST /transfer to, amount, _csrf=aIXI… (cookie sid, Origin: localhost:3047, Sec-Fetch-Site: same-origin)
+    P--&gt;&gt;B: 200 Sent ₹100 ✓
+    U-&gt;&gt;E: Opens the prize page
+    E--&gt;&gt;B: Page with a hidden form (to=vikram, amount=5000, NO token)
+    B-&gt;&gt;P: fetch /api/csrf-token (trap D)
+    P--&gt;&gt;B: { csrfToken } but no CORS header
+    Note over B: Response hidden from Vikram's page: Failed to fetch
+    U-&gt;&gt;B: Presses "Claim prize"
+    B-&gt;&gt;P: POST /transfer to=vikram, amount=5000 (cookie sid sent: same-site! Origin: localhost:3048, Sec-Fetch-Site: same-site)
+    Note over P: Sec-Fetch-Site is not same-origin
+    P--&gt;&gt;B: 403 CSRF check failed
+    Note over P: Same form to /vulnerable/transfer (cookie only)
+    P--&gt;&gt;B: 200 Sent ₹5000 to vikram 😱
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 2–5: the token lives in the <b>session</b> and in <b>our own page</b> only.</li>
+          <li>Step 7: the real form carries the token, and the browser says <code>same-origin</code>.</li>
+          <li>Steps 11–12: Vikram's script tries to <b>read</b> the token. The request even reaches the server, but the browser hides the reply from his page.</li>
+          <li>Step 14: the forged form <b>does</b> carry Rahul's cookie (ports don't make a different site), but it has no token and the browser labels it <code>same-site</code>.</li>
+          <li>Steps 15–16: the protected route refuses; the cookie-only route pays.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="defenses">
+      <h2>3. Which defense stops what</h2>
+      <p class="lead">Left: an attacker on a <b>different site</b> (127.0.0.1:3048). Right: an attacker on the <b>same site</b> (localhost:3048, like a hacked subdomain). Both aim at PaisaPay on localhost:3047.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Stopped</span>
+        <span class="chip"><i class="error"></i>Money stolen</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    X(["Cross-site attacker&lt;br/&gt;127.0.0.1:3048"]) --&gt; X1["Hidden form POST&lt;br/&gt;to the vulnerable route"]
+    X --&gt; X2["Cat photos link: GET&lt;br/&gt;to the vulnerable route"]
+    X --&gt; X3["Hidden form POST&lt;br/&gt;to /transfer"]
+    X1 --&gt; R1[/"401: SameSite=Lax&lt;br/&gt;kept the cookie home"/]
+    X2 --&gt; R2[/"₹1000 stolen: Lax sends&lt;br/&gt;cookies on link clicks"/]
+    X3 --&gt; R3[/"403: Sec-Fetch-Site cross-site,&lt;br/&gt;and no token anyway"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class R1,R3 ok
+    class R2 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    Y(["Same-site attacker&lt;br/&gt;localhost:3048"]) --&gt; Y1["Hidden form POST&lt;br/&gt;to the vulnerable route"]
+    Y --&gt; Y3["Hidden form POST&lt;br/&gt;to /transfer"]
+    Y --&gt; Y4["fetch /api/csrf-token"]
+    Y1 --&gt; S1[/"₹5000 stolen: same site,&lt;br/&gt;so Lax sends the cookie"/]
+    Y3 --&gt; S3[/"403: Sec-Fetch-Site same-site,&lt;br/&gt;Origin mismatch, no token"/]
+    Y4 --&gt; S4[/"Blocked: can't read&lt;br/&gt;the reply (no CORS)"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class S3,S4 ok
+    class S1 error
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>SameSite=Lax</b> only helps on the left (other sites), and only for POST. Link clicks (GET) still carry the cookie, so <b>never change data on GET</b>.</li>
+          <li>On the right, <b>SameSite does nothing</b>: <code>localhost:3047</code> and <code>localhost:3048</code> are the same site, just like <code>paisapay.in</code> and <code>blog.paisapay.in</code>.</li>
+          <li>The protected <code>/transfer</code> is safe on <b>both</b> sides: Fetch Metadata, the exact Origin check and the token don't care about "site".</li>
+          <li>The token stays secret because the attacker can't <b>read</b> our responses. A CORS config that allows it (topic 49) or an XSS on our own page (topic 48) would break that.</li>
+        </ol>
+        <p class="tip">Every red box is the <code>/vulnerable/transfer</code> route: it trusts the cookie alone and accepts GET. The same request to <code>/transfer</code> is refused every time.</p>
+      </aside>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
