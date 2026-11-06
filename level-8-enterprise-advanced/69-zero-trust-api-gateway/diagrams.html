@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>69. Zero Trust &amp; API Gateway Auth: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 69</div>
+    <h1>Zero Trust &amp; API Gateway Auth: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">zero trust &amp; API gateway notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#perimeter">2. Data flow: perimeter vs zero trust</a>
+    <a href="#breach">3. Data flow: assume breach</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check a request passes: first at the gateway (the edge), then again inside the service. Red boxes are where the perimeter model lets attackers through.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Safe outcome</span>
+        <span class="chip"><i class="error"></i>Attacker wins (perimeter model)</span>
+        <span class="chip"><i class="trap"></i>Can change any minute: checked live</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Request for /api/payroll"]) --&gt; Z{"Which way in?"}
+    Z -- "Straight to the internal port" --&gt; L{"Legacy service:&lt;br/&gt;trusts X-User?"}
+    L -- "Yes (perimeter)" --&gt; E1[/"Any salary, no token at all"/]
+    L -- "No (zero trust)" --&gt; S1
+    Z -- "Through the gateway" --&gt; B["step 1: drop client X-User, X-Roles…"]
+    B --&gt; C{"step 2: opaque token&lt;br/&gt;known and not revoked?"}
+    C -- No --&gt; OK1[/"401 at the edge"/]
+    C -- Yes --&gt; D{"step 3a: role allowed&lt;br/&gt;for this route?"}
+    D -- No --&gt; OK2[/"403 needs role hr"/]
+    D -- Yes --&gt; P{"step 3b: device managed&lt;br/&gt;and compliant now?"}
+    P -- No --&gt; OK3[/"403 healthy company device needed"/]
+    P -- Yes --&gt; M["step 4: mint Ed25519 JWT&lt;br/&gt;aud payroll-service, exp 60 s"]
+    M --&gt; S1{"step 5: service verifies itself&lt;br/&gt;alg, signature, iss, aud, exp"}
+    S1 -- "No token / wrong aud /&lt;br/&gt;bad signature / expired" --&gt; OK4[/"401 from the service"/]
+    S1 -- Valid --&gt; R{"Service checks role&lt;br/&gt;again: hr?"}
+    R -- No --&gt; OK5[/"403 HR only"/]
+    R -- Yes --&gt; OK6[/"200 payroll + audit line&lt;br/&gt;with request id"/]
+    B -. "Perimeter gateway forwards&lt;br/&gt;client x-* headers instead" .-&gt; E2[/"X-User spoofed:&lt;br/&gt;Rahul reads payroll"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2 error
+    class OK1,OK2,OK3,OK4,OK5,OK6 ok
+    class P trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>There are <b>two ways in</b>: through the gateway, or straight to the service from inside the network. Zero trust has to hold for both.</li>
+          <li>The gateway first <b>drops identity headers</b> the client sent. Only the gateway says who the user is.</li>
+          <li>It authenticates the <b>opaque</b> token by looking it up, so logout is instant.</li>
+          <li>It checks <b>role and device</b>. The device check (yellow) is live: the MDM can flip it at any time.</li>
+          <li>It mints a token for <b>one</b> service, valid <b>60 seconds</b>, signed with a key services can't use to sign.</li>
+          <li>The service <b>verifies everything again</b> and checks the role itself. That's "assume breach".</li>
+        </ol>
+        <p class="tip">The dotted arrow is the one-line bug from the demo: the client's headers spread after the gateway's own.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="perimeter">
+      <h2>2. Data flow: perimeter vs zero trust</h2>
+      <p class="lead">Rahul (employee, not HR) tries to read payroll. The perimeter model on top, zero trust below, with the real responses from the README run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul (or an insider)
+    participant G as API gateway :3069
+    participant L as legacy payroll :3070
+    participant P as payroll-service :3070
+
+    R-&gt;&gt;G: POST /login (Rahul, rahul-laptop)
+    G--&gt;&gt;R: 200 access_token dhLuUD… (opaque)
+
+    Note over R,L: ❌ Perimeter model
+    R-&gt;&gt;G: GET /vulnerable/api/payroll + X-User priya
+    Note over G: token OK, headers = x-user Rahul, then ...client x-* headers
+    G-&gt;&gt;L: X-User priya (Rahul's own value overwritten)
+    L--&gt;&gt;R: 200 every salary 😱
+    R-&gt;&gt;L: GET /legacy/payroll + X-User priya (no gateway, no token)
+    L--&gt;&gt;R: 200 every salary 😱
+
+    Note over R,P: ✅ Zero trust
+    R-&gt;&gt;G: GET /api/payroll + X-User priya
+    Note over G: drop x-user, Rahul's roles = employee, route needs hr
+    G--&gt;&gt;R: 403 This API needs the "hr" role
+    R-&gt;&gt;P: GET /payroll + X-User priya (no gateway)
+    P--&gt;&gt;R: 401 payroll-service: no token
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: Rahul gets an opaque token. It says nothing on its own; only the gateway can look it up.</li>
+          <li>Steps 3–5: the perimeter gateway lets <b>his</b> <code>X-User</code> win, and the legacy service believes it.</li>
+          <li>Steps 6–7: from inside the network he doesn't even need the gateway. This is what "trust the network" costs.</li>
+          <li>Steps 8–9: the zero trust gateway ignores the header and judges Rahul by his own token.</li>
+          <li>Steps 10–11: the real payroll service wants a <b>signed token</b>, so the inside door is shut too.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="breach">
+      <h2>3. Data flow: assume breach</h2>
+      <p class="lead">What if an attacker hacks orders-service and steals the tokens it receives? And what if a laptop goes unhealthy mid-session?</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor A as Attacker (inside orders-service)
+    actor Pr as Priya (HR)
+    participant G as API gateway :3069
+    participant O as orders-service
+    participant P as payroll-service
+    participant M as MDM
+
+    G-&gt;&gt;O: Bearer JWT (sub Rahul, aud orders-service, exp 60 s)
+    Note over A,O: attacker copies that JWT
+    A-&gt;&gt;P: GET /payroll, Bearer stolen JWT
+    P--&gt;&gt;A: 401 wrong audience (made for orders-service)
+    A-&gt;&gt;P: same JWT, payload edited to aud payroll-service + role hr
+    P--&gt;&gt;A: 401 bad signature (no private key to re-sign)
+
+    Pr-&gt;&gt;G: GET /api/payroll (from priya-mbp)
+    G-&gt;&gt;P: Bearer JWT (aud payroll-service)
+    P--&gt;&gt;Pr: 200 payroll
+    M-&gt;&gt;G: priya-mbp compliant false (disk encryption turned off)
+    Pr-&gt;&gt;G: GET /api/payroll (same valid token)
+    G--&gt;&gt;Pr: 403 healthy company device needed
+    M-&gt;&gt;G: priya-mbp compliant true
+    Pr-&gt;&gt;G: GET /api/payroll
+    G--&gt;&gt;Pr: 200 payroll again, no new login
+
+    Note over A,O: 60 s later
+    A-&gt;&gt;O: GET /orders, Bearer stolen JWT
+    O--&gt;&gt;A: 401 expired
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Steps 1–4: a token made for orders is useless at payroll. That's what <code>aud</code> is for.</li>
+          <li>Steps 5–6: editing the payload breaks the Ed25519 signature. Services hold only the <b>public</b> key, so even a hacked service can't mint tokens.</li>
+          <li>Steps 7–9: Priya, HR, on a healthy company laptop: allowed.</li>
+          <li>Steps 10–12: the MDM reports a problem and the <b>very next</b> request is blocked, though her token is still valid.</li>
+          <li>Steps 13–15: fixed laptop, access back, no login needed.</li>
+          <li>Steps 16–17: every stolen internal token dies on its own within 60 seconds.</li>
+        </ol>
+        <p class="tip">Logout works the same way at the edge: the opaque token is deleted, so the next request through the gateway is a 401 at once.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

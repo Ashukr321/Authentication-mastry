@@ -1,0 +1,2 @@
+# server.js writes a fresh demo CA, certificates and PRIVATE KEYS here on every start. Never commit keys.
+certs/

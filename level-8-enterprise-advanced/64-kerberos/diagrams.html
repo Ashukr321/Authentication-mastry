@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>64. Kerberos: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 64</div>
+    <h1>Kerberos: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">Kerberos notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#dataflow">2. Data flow</a>
+    <a href="#keys">3. Who opens what</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check on the way from "Rahul types his password" to "payroll shows his salary", and where each attack from the demo lands.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Rejected safely / allowed correctly</span>
+        <span class="chip"><i class="error"></i>Attacker wins</span>
+        <span class="chip"><i class="trap"></i>By design: not checked here</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["kinit: password becomes a key"]) --&gt; B{"AS: pre-auth timestamp&lt;br/&gt;opens with rahul's key?"}
+    B -- "No padata" --&gt; R1[/"KDC_ERR_PREAUTH_REQUIRED"/]
+    B -- "Wrong password" --&gt; R2[/"KDC_ERR_PREAUTH_FAILED"/]
+    B -- Yes --&gt; C["TGT (krbtgt key)&lt;br/&gt;+ session key (rahul's key)"]
+    C --&gt; D{"TGS: TGT opens with krbtgt key,&lt;br/&gt;authenticator fresh and new?"}
+    D -- Yes --&gt; E{"Is rahul allowed&lt;br/&gt;to use this service?"}
+    E -- "Never asked: any user,&lt;br/&gt;any service" --&gt; F["Service ticket&lt;br/&gt;(locked with the service's key)"]
+    F --&gt; K[/"Kerberoast: SQL ticket cracked offline,&lt;br/&gt;password Chai@2024"/]
+    F --&gt; G{"Payroll: ticket opens&lt;br/&gt;with MY keytab key?"}
+    G -- "Ticket for MSSQLSvc" --&gt; R3[/"KRB_AP_ERR_MODIFIED"/]
+    G -- Yes --&gt; H{"Authenticator within 5 min&lt;br/&gt;and not seen before?"}
+    H -- "Clock 10 min off" --&gt; R4[/"KRB_AP_ERR_SKEW"/]
+    H -- "Same header again" --&gt; R5[/"KRB_AP_ERR_REPEAT"/]
+    H -- Yes --&gt; I{"Groups from the ticket&lt;br/&gt;include HR?"}
+    I -- "/payroll/me" --&gt; OK1[/"200 own salary + AP-REP&lt;br/&gt;(mutual auth)"/]
+    I -- "/payroll/all, no HR" --&gt; R6[/"403 Only HR"/]
+    C --&gt; P[/"Pass-the-ticket: copied ccache&lt;br/&gt;works until it expires"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class K,P error
+    class R1,R2,R3,R4,R5,R6,OK1 ok
+    class E trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>AS</b> only issues a TGT if the pre-auth timestamp opens with the user's key. That's the one moment the password matters.</li>
+          <li>The <b>TGS</b> checks the TGT and the authenticator, but <b>not</b> permissions (yellow). That's by design, and it's what makes Kerberoasting possible.</li>
+          <li>The <b>service</b> checks everything with its own keytab key: right service, not expired, fresh, not replayed. It never calls the KDC.</li>
+          <li><b>Authorization</b> comes last, from the groups (PAC) inside the ticket.</li>
+          <li>The two red boxes are the attacks the protocol can't stop by itself: weak service passwords and stolen ticket caches.</li>
+        </ol>
+        <p class="tip">Every box here was hit in the README's curl run.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="dataflow">
+      <h2>2. Data flow</h2>
+      <p class="lead">The three exchanges with the real messages from our demo. <code>{ … }key</code> means "encrypted with that key".</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul (kinit, ccache)
+    participant K as KDC (AS + TGS)
+    participant P as Payroll service (keytab)
+
+    Note over R: password chai-and-code-42 becomes rahulKey, password forgotten
+    R-&gt;&gt;K: POST /kdc/as cname rahul, nonce, padata {ts}rahulKey
+    Note over K: opens padata with stored rahulKey, time within 5 min
+    K--&gt;&gt;R: ticket TGT {rahul, S1, groups}krbtgtKey + encPart {S1, nonce}rahulKey
+    Note over R: opens encPart, nonce matches, saves TGT + S1 in rahul.ccache
+
+    R-&gt;&gt;K: POST /kdc/tgs TGT + authenticator {rahul, ctime}S1 + sname HTTP/payroll
+    Note over K: opens TGT with krbtgtKey, gets S1, checks authenticator
+    K--&gt;&gt;R: ticket {rahul, S2, groups Employees}payrollKey + encPart {S2, nonce}S1
+
+    R-&gt;&gt;P: GET /payroll/me, Authorization Negotiate (ticket + {rahul, ctime}S2)
+    Note over P: opens ticket with keytab, gets S2, checks authenticator, no KDC call
+    P--&gt;&gt;R: 200 salary 18 lakh + WWW-Authenticate Negotiate {ctime}S2
+    Note over R: AP-REP opens with S2, so the server is genuine (mutual auth)
+
+    R-&gt;&gt;P: same Authorization header again (replay)
+    P--&gt;&gt;R: 401 KRB_AP_ERR_REPEAT
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one machine. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2 (<b>AS</b>): only an encrypted timestamp goes out. The reply has two envelopes: one for the KDC itself (TGT), one for Rahul (S1).</li>
+          <li>Steps 3–4 (<b>TGS</b>): no password. The authenticator proves Rahul holds S1. The new ticket is locked with <b>payroll's</b> key, so Rahul can't read or change it.</li>
+          <li>Steps 5–6 (<b>AP</b>): payroll opens the ticket with its keytab, learns S2, checks the authenticator. The reply's AP-REP proves payroll is real.</li>
+          <li>Steps 7–8: a captured header is useless a second time.</li>
+        </ol>
+        <p class="tip">S1 = TGS session key, S2 = payroll session key. Both are random and new for every logon / ticket.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="keys">
+      <h2>3. Who opens what</h2>
+      <p class="lead">Kerberos is envelopes inside envelopes. Each key opens one envelope, and that envelope holds the next key.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Key Rahul holds</span>
+        <span class="chip"><i class="trap"></i>Key only the KDC holds</span>
+        <span class="chip"><i class="error"></i>Key the KDC and the service hold</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    RK["rahul's key&lt;br/&gt;(from his password)"] -- opens --&gt; ASREP["AS-REP encPart"]
+    KT["krbtgt key"] -- opens --&gt; TGT["TGT"]
+    ASREP -. "holds" .-&gt; S1["S1&lt;br/&gt;TGS session key"]
+    TGT -. "holds" .-&gt; S1
+    S1 -- opens --&gt; TGSREP["TGS-REP encPart"]
+    PK["payroll key&lt;br/&gt;(keytab)"] -- opens --&gt; ST["Service ticket"]
+    TGSREP -. "holds" .-&gt; S2["S2&lt;br/&gt;payroll session key"]
+    ST -. "holds" .-&gt; S2
+    S2 -- opens --&gt; AUTH["Authenticator + AP-REP"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class RK,S1,S2 ok
+    class KT trap
+    class PK error
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Rahul</b> gets S1 by opening the AS-REP with his own key; the <b>KDC</b> gets the same S1 by opening the TGT with the krbtgt key. Now both share S1.</li>
+          <li>Same trick one level down: Rahul gets S2 from the TGS-REP (with S1); <b>payroll</b> gets S2 from the service ticket (with its keytab).</li>
+          <li>Steal the <b>krbtgt key</b> → make any TGT (golden ticket). Steal or crack the <b>payroll key</b> → make any payroll ticket (silver ticket).</li>
+          <li>Steal Rahul's <b>ccache</b> → you have tickets <b>and</b> S1/S2, so you are Rahul until they expire (pass-the-ticket).</li>
+        </ol>
+        <p class="tip">Rahul never learns the krbtgt or payroll key, and payroll never learns Rahul's key.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

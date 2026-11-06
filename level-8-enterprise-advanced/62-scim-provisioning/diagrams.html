@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>62. SCIM Provisioning: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 62</div>
+    <h1>SCIM Provisioning: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">SCIM provisioning notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#lifecycle">2. Data flow: joiner, mover, leaver</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check a SCIM request from an IdP goes through in ChaiDesk, and what each result does to the user and their sessions.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Change applied</span>
+        <span class="chip"><i class="error"></i>Rejected (SCIM error JSON)</span>
+        <span class="chip"><i class="trap"></i>IdP quirk we must accept</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["IdP calls /scim/v2/... &lt;br/&gt;Okta or Entra ID"]) --&gt; B{"Bearer token = sha256 found?"}
+    B -- No --&gt; E1[/"401 + WWW-Authenticate"/]
+    B -- Yes --&gt; C["req.tenant = the token's tenant&lt;br/&gt;(never from URL or body)"]
+    C --&gt; D{"User or group id&lt;br/&gt;belongs to this tenant?"}
+    D -- No --&gt; E2[/"404 not found&lt;br/&gt;(same as missing)"/]
+    D -- Yes --&gt; F{"Which method?"}
+    F -- "POST /Users" --&gt; G{"userName taken in tenant?&lt;br/&gt;case-insensitive"}
+    G -- Yes --&gt; E3[/"409 scimType uniqueness&lt;br/&gt;IdP links instead"/]
+    G -- No --&gt; OK1[/"201 + Location, user created"/]
+    F -- "PATCH /Users" --&gt; Q["Ops applied to a COPY&lt;br/&gt;Replace = replace, 'False' = false"]
+    Q --&gt; V{"Copy passes the same&lt;br/&gt;validation as POST?"}
+    V -- No --&gt; E4[/"400 invalidValue / invalidPath"/]
+    V -- Yes --&gt; H{"active went&lt;br/&gt;true to false?"}
+    H -- Yes --&gt; OK2[/"Saved + ALL sessions ended&lt;br/&gt;SSO login refused"/]
+    H -- No --&gt; OK3[/"200 saved, version + 1"/]
+    F -- "PATCH /Groups" --&gt; M{"Every member is a user&lt;br/&gt;of this tenant?"}
+    M -- No --&gt; E5[/"400 members: user not found"/]
+    M -- Yes --&gt; OK4[/"Membership saved&lt;br/&gt;roles change on next request"/]
+    F -- "DELETE /Users" --&gt; OK5[/"204, removed from groups,&lt;br/&gt;sessions ended"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4,E5 error
+    class OK1,OK2,OK3,OK4,OK5 ok
+    class Q trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>token</b> decides the tenant. One token per customer, stored only as a hash.</li>
+          <li>Every id is checked against <b>that tenant</b>. Another company's user looks exactly like a missing one.</li>
+          <li>A duplicate create is a <b>409 uniqueness</b>, which Okta and Entra ID understand.</li>
+          <li><b>PATCH</b> (yellow) is where IdPs differ: no-path objects, <code>"Replace"</code>, the string <code>"False"</code>. We apply ops to a copy, then validate the copy like a new user.</li>
+          <li>The key box is green "ALL sessions ended": a leaver loses access <b>now</b>, not when the cookie expires.</li>
+        </ol>
+        <p class="tip">Every box here was hit in the demo's curl run in the README.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="lifecycle">
+      <h2>2. Data flow: joiner, mover, leaver</h2>
+      <p class="lead">Priya's whole life at TechCorp as real SCIM calls from Okta to ChaiDesk (localhost:3062), and what her browser sees.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant O as Okta (TechCorp)
+    participant S as ChaiDesk SCIM API
+    participant B as Priya's browser
+
+    Note over O,S: Joiner. Every call has Authorization Bearer scim-techcorp-...
+    O-&gt;&gt;S: GET /Users?filter=userName eq "priya@techcorp.com"
+    S--&gt;&gt;O: 200 ListResponse totalResults 0
+    O-&gt;&gt;S: POST /Users userName, name Priya Sharma, active true
+    S--&gt;&gt;O: 201 id 85f6d03d..., Location /scim/v2/Users/85f6d03d...
+    Note over O: Okta stores id 85f6d03d... for every later call
+    B-&gt;&gt;S: POST /sso/login (after Okta SSO)
+    S--&gt;&gt;B: sid cookie (HttpOnly), roles member
+
+    Note over O,S: Mover
+    O-&gt;&gt;S: POST /Groups "ChaiDesk Admins", members [85f6d03d...]
+    S--&gt;&gt;O: 201 group 3f7c0029...
+    B-&gt;&gt;S: GET /admin/reports
+    S--&gt;&gt;B: 200 activeUsers 2 (admin via group)
+    O-&gt;&gt;S: PATCH /Groups/3f7c0029... remove members[value eq "85f6d03d..."]
+    B-&gt;&gt;S: GET /admin/reports
+    S--&gt;&gt;B: 403 only ChaiDesk Admins
+    O-&gt;&gt;S: PATCH /Users/85f6d03d... title Team Lead, familyName Kapoor
+    S--&gt;&gt;O: 200 version W/"2"
+
+    Note over O,S: Leaver. IT clicks Deactivate
+    O-&gt;&gt;S: PATCH /Users/85f6d03d... op replace, value active false
+    Note over S: active true to false, so end 1 session
+    S--&gt;&gt;O: 200 active false
+    B-&gt;&gt;S: GET /me (old sid cookie)
+    S--&gt;&gt;B: 401 Not signed in
+    B-&gt;&gt;S: POST /sso/login
+    S--&gt;&gt;B: 403 account is deactivated
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: Okta always <b>searches first</b>, then creates. Our <code>id</code> is what Okta uses from then on.</li>
+          <li>Steps 5–6: SSO proves who Priya is; ChaiDesk still checks she is <b>provisioned and active</b>.</li>
+          <li>Steps 7–12: group membership becomes a role, computed on <b>every request</b>, so removal works on her next click.</li>
+          <li>Steps 13–14: a mover's new title and surname arrive by PATCH; <code>version</code> goes up.</li>
+          <li>Steps 15–20: the leaver. One PATCH, and her existing session is gone along with any new login.</li>
+        </ol>
+        <p class="tip">Entra ID sends the same leaver PATCH as <code>{"op":"Replace","path":"active","value":"False"}</code>, and only every 40 minutes or so.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>59. SAML Attacks: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 59</div>
+    <h1>SAML Attacks: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">SAML attacks notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#gap">3. Checked vs read</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every decision an SP makes about an incoming SAMLResponse. At each red box, one of the attacks wins. The safe ACS takes the green path every time.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Safe choice / rejected</span>
+        <span class="chip"><i class="error"></i>Attacker wins</span>
+        <span class="chip"><i class="trap"></i>Careful: attacker-controlled input</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Browser POSTs SAMLResponse&lt;br/&gt;base64 XML, to the ACS"]) --&gt; P{"Has a DOCTYPE?"}
+    P -- "Vulnerable: expand entities" --&gt; E5[/"Attack 5: XXE&lt;br/&gt;file content in the error"/]
+    P -- "Safe: reject" --&gt; R0[/"401 DOCTYPE not allowed"/]
+    P -- "No DOCTYPE" --&gt; S{"Assertion signed?"}
+    S -- "Vulnerable: no signature, skip check" --&gt; E1[/"Attack 1: signature stripped"/]
+    S -- "Safe: unsigned" --&gt; R1[/"401 not signed"/]
+    S -- Yes --&gt; K{"Which key verifies it?"}
+    K -- "Vulnerable: key from KeyInfo" --&gt; E2[/"Attack 2: Vikram's own key"/]
+    K -- "Safe: pinned IdP key" --&gt; N{"How many Assertions?&lt;br/&gt;Which one is read?"}
+    N -- "Vulnerable: verify by ID, read the first" --&gt; E3[/"Attack 3: XSW&lt;br/&gt;fake Assertion is read"/]
+    N -- "Safe: more than 1" --&gt; R3[/"401 expected exactly 1"/]
+    N -- "Safe: exactly 1, read THAT one" --&gt; T{"NameID text?"}
+    T -- "Vulnerable: first text node" --&gt; E4[/"Attack 4: comment injection&lt;br/&gt;only the part before the comment"/]
+    T -- "Safe: all text nodes" --&gt; C{"Audience, Recipient, Destination,&lt;br/&gt;time, InResponseTo, not used?"}
+    C -- "Vulnerable: never checked" --&gt; E6[/"Attack 6: replay or&lt;br/&gt;another app's assertion"/]
+    C -- No --&gt; R6[/"401 replay / wrong app / expired"/]
+    C -- Yes --&gt; OK[/"NameID → our own user table"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4,E5,E6 error
+    class R0,R1,R3,R6,OK ok
+    class A trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The SAMLResponse (yellow) went through the attacker's browser. <b>Every byte</b> is attacker input, including <code>DOCTYPE</code> and <code>KeyInfo</code>.</li>
+          <li>Top to bottom is the <b>order</b> of the safe checks: parse safely, verify, then read only from what was verified.</li>
+          <li>Each red box is one bug in <code>/vulnerable/acs</code>. Each green box is the matching fix in <code>/acs</code>.</li>
+          <li>Even with a perfect signature check, the bottom diamond still matters: a real IdP signature on <b>someone else's</b> or an <b>old</b> assertion is still a valid signature.</li>
+        </ol>
+        <p class="tip">Comment injection passes the signature check on the safe side too. It's stopped by reading the <b>full</b> NameID, which then has no HR account (403).</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">XML Signature Wrapping, with the real flow from the demo. Vikram starts with his own honest login, and the same forged response goes to both ACS endpoints.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram (partner account)
+    participant S as ChaiCart HR (SP, localhost:3159)
+    participant I as ChaiCart IdP (localhost:3160)
+    participant E as Vikram's toolkit (127.0.0.1:3161)
+
+    V-&gt;&gt;S: GET /login
+    S--&gt;&gt;V: 302 to IdP /sso?SAMLRequest (ID _74cd, saved as pending)
+    V-&gt;&gt;I: POST /sso (his own email and password)
+    Note over I: Assertion ID _2de7, NameID priya@chaicart.in.evil.dev, signed with the IdP key
+    I--&gt;&gt;V: SAMLResponse (InResponseTo _74cd, Audience chaicart-hr)
+    V-&gt;&gt;E: POST /forge/xsw (his SAMLResponse)
+    Note over E: copy the Assertion, remove its Signature, new ID _1793, NameID priya@chaicart.in
+    Note over E: insert the copy BEFORE the real one. Reference URI still says #_2de7
+    E--&gt;&gt;V: forged SAMLResponse (2 Assertions)
+    V-&gt;&gt;S: POST /vulnerable/acs
+    Note over S: signature points at _2de7: valid. Reads Assertion [0] = _1793
+    S--&gt;&gt;V: 200 Welcome priya@chaicart.in, role admin, salaries 😱
+    V-&gt;&gt;S: POST /acs (same forged response)
+    Note over S: findAll Assertion at any depth = 2
+    S--&gt;&gt;V: 401 expected exactly 1 Assertion, found 2 ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–5: a completely normal SP-initiated login. The IdP did nothing wrong.</li>
+          <li>Step 6 and the notes: the toolkit never touches the signed bytes. It only <b>adds</b> an unsigned assertion.</li>
+          <li>Steps 10–12: the vulnerable ACS asks "is the signature valid?" (yes, for <code>_2de7</code>) and then "who is this?" (from <code>_1793</code>). Two different answers to "which assertion?".</li>
+          <li>Steps 13–15: the safe ACS counts assertions first, so there's only one possible answer.</li>
+        </ol>
+        <p class="tip">Swap <code>xsw</code> for <code>strip</code>, <code>selfsigned</code> or <code>comment</code> in step 6 and the shape is the same: vulnerable says 200 as Priya, safe says 401 or 403.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="gap">
+      <h2>3. What the signature checks vs what the app reads</h2>
+      <p class="lead">XSW and comment injection both live in the gap between the bytes the signature covers and the value the code uses.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Covered by the signature</span>
+        <span class="chip"><i class="error"></i>What the vulnerable SP uses</span>
+        <span class="chip"><i class="trap"></i>Attacker's edit</span>
+      </div>
+      <div class="layout wide">
+      <div class="pair">
+        <div class="diagram"><h3>❌ XSW: two Assertions</h3><pre class="mermaid">
+flowchart TD
+    R(["samlp:Response"]) --&gt; F["Assertion _1793 (no signature)&lt;br/&gt;NameID = Priya&#39;s address"]
+    R --&gt; G["Assertion _2de7 (signed)&lt;br/&gt;NameID = Vikram&#39;s .evil.dev address"]
+    G --&gt; SG["Signature: Reference URI #_2de7"]
+    SG -. "digest covers" .-&gt; G
+    F --&gt; U[/"App reads Assertion [0]&lt;br/&gt;logged in as Priya"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class F trap
+    class G,SG ok
+    class U error
+</pre></div>
+        <div class="diagram"><h3>❌ Comment injection: one NameID</h3><pre class="mermaid">
+flowchart TD
+    N(["NameID children"]) --&gt; T1["text: Priya&#39;s address"]
+    N --&gt; C1["comment: empty"]
+    N --&gt; T2["text: .evil.dev"]
+    T1 --&gt; CAN["c14n drops comments:&lt;br/&gt;the full .evil.dev address&lt;br/&gt;same digest as the IdP signed"]
+    T2 --&gt; CAN
+    T1 --&gt; FT[/"First text node only:&lt;br/&gt;Priya&#39;s address"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class C1 trap
+    class CAN ok
+    class FT error
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Green is what the IdP's signature really protects. Both attacks leave it <b>untouched</b>, so the signature stays valid.</li>
+          <li>Left: the signature protects <code>_2de7</code>, but <code>[0]</code> is <code>_1793</code>. Fix: exactly one Assertion, read from the verified element.</li>
+          <li>Right: canonicalization joins the two text nodes and ignores the comment. Code that takes only the first text node gets a <b>different</b> string. Fix: read all text nodes.</li>
+        </ol>
+        <p class="tip">The general rule for both: <b>the value you use must come from exactly the bytes you verified</b>, read the same way the verifier read them.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>60. OIDC SSO: Okta / Entra ID / Auth0 / Keycloak: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 60</div>
+    <h1>OIDC SSO with Okta / Entra ID / Auth0 / Keycloak: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">enterprise OIDC SSO notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#dataflow">2. Data flow</a>
+    <a href="#profiles">3. Four IdPs, one shape</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every decision KaamKaro makes, from "type your work email" to "logged in". Each red box is an attack or mistake from the demo, stopped.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in / safe outcome</span>
+        <span class="chip"><i class="error"></i>Refused</span>
+        <span class="chip"><i class="trap"></i>Looks trustworthy, but proves nothing on its own</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["User types a work email"]) --&gt; B{"Email domain belongs&lt;br/&gt;to an org with SSO?"}
+    B -- "No (freelance.example)" --&gt; P["Password login"]
+    B -- "Yes (acme.example)" --&gt; C["Load the org's connection:&lt;br/&gt;issuer, client id, secret"]
+    P --&gt; P1{"Org enforces SSO?"}
+    P1 -- Yes --&gt; E0[/"403: Acme Corp requires&lt;br/&gt;single sign-on"/]
+    P1 -- No --&gt; OKP[/"Logged in with password"/]
+    C --&gt; D{"Discovery: doc.issuer ==&lt;br/&gt;configured issuer?"}
+    D -- "No (missing trailing slash)" --&gt; E1[/"502: SSO misconfigured"/]
+    D -- Yes --&gt; F["Save state to org, nonce, PKCE verifier.&lt;br/&gt;Redirect to the org's IdP"]
+    F --&gt; G["User logs in at Okta / Entra /&lt;br/&gt;Auth0 / Keycloak"]
+    G --&gt; H{"Callback: state found&lt;br/&gt;in THIS browser, unused?"}
+    H -- No --&gt; E2[/"400: state mismatch"/]
+    H -- Yes --&gt; I{"Code redeemed at the&lt;br/&gt;org's OWN token endpoint?"}
+    I -- "invalid_grant (code from another IdP)" --&gt; E3[/"400: sign-in failed"/]
+    I -- Yes --&gt; J{"ID token: RS256, kid, iss and aud&lt;br/&gt;of THIS connection, exp, nonce"}
+    J -- Fail --&gt; E3
+    J -- Pass --&gt; K["Claim profile: subject,&lt;br/&gt;email, groups"]
+    K --&gt; T["email_verified: true"]
+    T --&gt; L{"Email domain in the org's&lt;br/&gt;VERIFIED domains?"}
+    L -- "No (Shady asserts acme.example)" --&gt; E4[/"403: can't be used for&lt;br/&gt;acme.example accounts"/]
+    L -- Yes --&gt; M{"Known (org, subject)?"}
+    M -- Yes --&gt; OK1[/"Returning user"/]
+    M -- "No, same-org account with this email" --&gt; OK2[/"Linked to the pre-SSO account"/]
+    M -- "No account" --&gt; OK3[/"Created (JIT)"/]
+    OK1 &amp; OK2 &amp; OK3 --&gt; R[/"Role re-synced from groups,&lt;br/&gt;new session id"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E0,E1,E2,E3,E4 error
+    class OKP,OK1,OK2,OK3,R ok
+    class T trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>email domain</b> picks the org, the org picks the IdP. No org means plain password login, unless the org <b>enforces SSO</b>.</li>
+          <li><b>Discovery</b> is checked before anyone is sent away: Umbrella's missing <code>/</code> fails here, once, with a clear log line.</li>
+          <li>The <b>state</b> remembers which org the login started with. From then on the callback trusts only that, never the token's own <code>iss</code>.</li>
+          <li>A code from <b>another IdP</b> fails at this org's token endpoint (mix-up). A bad token fails the ID token checks from topic 36.</li>
+          <li><b>Yellow:</b> <code>email_verified: true</code> from a customer's IdP is just that customer's admin talking. The <b>verified-domain</b> check is the real trust boundary.</li>
+          <li>Users are found by <b>(org, subject)</b>; the role is recomputed on <b>every</b> login.</li>
+        </ol>
+        <p class="tip">Every box here was hit in the README's curl run.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="dataflow">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul's Okta login with the real requests from the demo, then Vikram's attempt through Shady Ltd's own Keycloak.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul (Acme)
+    participant K as KaamKaro (localhost:3060)
+    participant O as Acme's Okta (localhost:3061)
+    participant S as Shady's Keycloak
+
+    R-&gt;&gt;K: POST /sso/start, email at acme.example
+    Note over K: acme.example belongs to Acme Corp (profile okta)
+    K-&gt;&gt;O: GET /okta/oauth2/default/.well-known/openid-configuration
+    O--&gt;&gt;K: issuer, authorization_endpoint, token_endpoint, jwks_uri
+    Note over K: issuer matches the config exactly. pending[state] = acme, nonce, verifier
+    K--&gt;&gt;R: 303 to /v1/authorize?client_id=0oa4kaamkaro8x7, state, nonce, code_challenge, login_hint
+    R-&gt;&gt;O: log in (password + MFA at Okta)
+    O--&gt;&gt;R: 302 to /sso/callback?code=...&amp;state=...
+    R-&gt;&gt;K: GET /sso/callback?code=...&amp;state=...
+    Note over K: state found in this session, so the org is Acme
+    K-&gt;&gt;O: POST /v1/token (Basic client auth, code, code_verifier)
+    O--&gt;&gt;K: id_token: iss okta/oauth2/default, sub 00u8rahul1a2b3c4d5, groups KaamKaro-Admins
+    K-&gt;&gt;O: GET /v1/keys (once, cached by kid)
+    Note over K: RS256 ok, iss and aud are Acme's, nonce ok, domain acme.example verified for Acme
+    K--&gt;&gt;R: 303 /me, new session. Linked to usr_kYuCMw, role admin
+
+    Note over R,S: 😈 Vikram, through Shady Ltd's connection
+    R-&gt;&gt;K: POST /sso/start, email at shady.example
+    K--&gt;&gt;R: 303 to Shady's Keycloak
+    R-&gt;&gt;S: log in as vikram
+    S--&gt;&gt;K: (via callback + token) id_token signed by Shady: email of Rahul at acme.example, email_verified true
+    Note over K: signature, iss, aud, nonce all VALID for Shady. But acme.example is not Shady's domain
+    K--&gt;&gt;R: 403 Shady Ltd's sign-in can't be used for acme.example accounts
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–5: the email chose Acme; KaamKaro read Okta's endpoints from discovery and remembered "this state is Acme".</li>
+          <li>Steps 6–9: the user logs in at <b>Okta</b>, never at KaamKaro. MFA and company rules happen there.</li>
+          <li>Steps 10–13: the code is swapped at <b>Acme's</b> token endpoint, and the ID token is checked against <b>Acme's</b> issuer, client id and keys.</li>
+          <li>Step 14: Rahul's old password account is linked, and his role comes from the <code>groups</code> claim.</li>
+          <li>Steps 15–19: Shady's token is <b>cryptographically perfect</b>. It fails only on the business rule: Shady never proved it owns <code>acme.example</code>.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="profiles">
+      <h2>3. Four IdPs, one shape</h2>
+      <p class="lead">The same protocol, four different ID token layouts. A tiny claim profile per IdP type turns each into <code>{ subject, email, groups }</code>, and everything after that is shared code.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>The common shape KaamKaro uses</span>
+        <span class="chip"><i class="trap"></i>Quirk that breaks naive code</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    subgraph IDP["What each IdP sends"]
+      direction TB
+      OK["Okta&lt;br/&gt;iss: okta/oauth2/default&lt;br/&gt;sub, email&lt;br/&gt;groups: KaamKaro-Admins"]
+      EN["Entra ID&lt;br/&gt;iss: entra/TENANT-ID/v2.0&lt;br/&gt;oid + tid, preferred_username&lt;br/&gt;roles: KaamKaro.Admin"]
+      A0["Auth0&lt;br/&gt;iss: auth0/ with trailing slash&lt;br/&gt;sub auth0|65a1...&lt;br/&gt;namespaced roles claim"]
+      KC["Keycloak&lt;br/&gt;iss: keycloak/realms/initech&lt;br/&gt;sub (UUID), email&lt;br/&gt;realm_access.roles"]
+    end
+    subgraph Q["Quirks"]
+      direction TB
+      Q1["Entra: no email claim by default,&lt;br/&gt;sub differs per app: use oid"]
+      Q2["Auth0: issuer must keep the slash"]
+      Q3["Keycloak: roles need&lt;br/&gt;Add to ID token"]
+    end
+    OK --&gt; P["Claim profile&lt;br/&gt;(one small function per IdP type)"]
+    EN --&gt; P
+    A0 --&gt; P
+    KC --&gt; P
+    EN -.- Q1
+    A0 -.- Q2
+    KC -.- Q3
+    P --&gt; N["subject, email, groups"]
+    N --&gt; X["Key = org + subject&lt;br/&gt;role = adminGroup in groups?"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class N,X ok
+    class Q1,Q2,Q3 trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Left:</b> the parts of each ID token that differ. Everything else (<code>aud</code>, <code>exp</code>, <code>nonce</code>, RS256) is identical.</li>
+          <li><b>Yellow:</b> the three quirks that most often break hand-written integrations.</li>
+          <li><b>Middle:</b> the claim profile is the <b>only</b> IdP-specific code in KaamKaro: four one-line functions.</li>
+          <li><b>Right:</b> the user is keyed by <b>org + subject</b> (Entra: <code>oid</code>), and the app role comes from the group the org's admin picked.</li>
+        </ol>
+        <p class="tip">The issuer shapes shown are the demo's; in real life they're <code>acme.okta.com/oauth2/default</code>, <code>login.microsoftonline.com/TENANT/v2.0</code>, <code>globex.auth0.com/</code> and <code>sso.initech.com/realms/initech</code>.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

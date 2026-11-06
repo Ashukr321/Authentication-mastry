@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>63. LDAP / Active Directory: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 63</div>
+    <h1>LDAP / Active Directory: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">LDAP / Active Directory notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#groups">3. Nested groups</a>
+    <a href="#injection">4. LDAP injection</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">The safe <code>POST /login</code> in ChaiPortal: search, then bind, then groups. Each check stops one real attack.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Logged in</span>
+        <span class="chip"><i class="error"></i>Rejected</span>
+        <span class="chip"><i class="trap"></i>The trap this check prevents</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["username + password"]) --&gt; B{"Password empty?&lt;br/&gt;Username not a-z 0-9 . _ -?"}
+    B -- Yes --&gt; E1[/"400"/]
+    B -. "skipping this" .-&gt; T1[/"Empty password = unauthenticated bind:&lt;br/&gt;AD says success as anonymous"/]
+    B -- No --&gt; C{"3 failures for this&lt;br/&gt;username in 15 min?"}
+    C -- Yes --&gt; E2[/"429, before AD locks at 5"/]
+    C -- No --&gt; D["Service account searches OU=People&lt;br/&gt;(sAMAccountName=escaped input)"]
+    D --&gt; F{"Exactly one entry?"}
+    F -- "0 or 2+" --&gt; E3[/"401 Wrong username or password"/]
+    F -- Yes --&gt; G["NEW ldaps connection:&lt;br/&gt;bind as the user's DN + password"]
+    G -- "error 49 (52e, 533, 775)" --&gt; E3
+    G -- ok --&gt; H["Walk nested groups,&lt;br/&gt;map group DNs to roles"]
+    H --&gt; I{"In Portal-Users?"}
+    I -- No --&gt; E4[/"403 not allowed in this app"/]
+    I -- Yes --&gt; J["JIT local user by objectGUID,&lt;br/&gt;app session cookie"]
+    J --&gt; OK[/"Logged in with roles"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4 error
+    class T1 trap
+    class OK ok
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The app never checks the password itself. It asks AD by <b>binding</b> as the user.</li>
+          <li>The first check exists only because of the yellow trap: an empty password "succeeds".</li>
+          <li>The <b>service account</b> searches, because AD refuses anonymous searches and because we need the user's DN and groups.</li>
+          <li>Every failure after validation looks the same: <code>401 Wrong username or password</code>. The AD <code>data</code> code goes to the log.</li>
+          <li>A correct password is not enough: Neha has one but no Portal-Users group, so she gets <code>403</code>.</li>
+        </ol>
+        <p class="tip">Our limit (3) is below AD's lockout (5). Otherwise anyone can lock employees out of their laptops through our form.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">The real messages for Priya's login, from the test run on port 3063. Plain <code>ldap://</code> would send her password in clear text; we use <code>ldaps://</code>.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor P as Priya (browser)
+    participant A as ChaiPortal (localhost:3063)
+    participant D as AD dc1.chaicorp.local:636
+
+    Note over A,D: at startup, over TLS
+    A-&gt;&gt;D: Bind CN=svc-chaiportal,OU=Service Accounts + its password
+    D--&gt;&gt;A: success (service connection, reused)
+    P-&gt;&gt;A: POST /login { username: Priya, password: masala-dosa-77 }
+    Note over A: lowercase, allowlist check, password not empty, under 3 failures
+    A-&gt;&gt;D: Search base OU=People filter (&amp;(objectClass=user)(sAMAccountName=priya)) attrs cn, objectGUID, memberOf, sizeLimit 2
+    D--&gt;&gt;A: 1 entry: CN=Priya Sharma,OU=People, memberOf IT-Leads
+    A-&gt;&gt;D: NEW connection: Bind CN=Priya Sharma,OU=People + masala-dosa-77
+    D--&gt;&gt;A: success (AD checked the password)
+    A-&gt;&gt;D: Search base CN=IT-Leads scope base, read memberOf
+    D--&gt;&gt;A: memberOf CN=Portal-Admins
+    A-&gt;&gt;D: Search base CN=Portal-Admins scope base, read memberOf
+    D--&gt;&gt;A: memberOf CN=Portal-Users
+    Note over A: roles = user, admin. JIT: create local user for this objectGUID
+    A--&gt;&gt;P: 200 Welcome, Priya Sharma, roles user + admin, sid cookie (HttpOnly, SameSite=Lax)
+    P-&gt;&gt;A: GET /admin (cookie sid)
+    A-&gt;&gt;D: Search (objectGUID=Priya's) read userAccountControl
+    D--&gt;&gt;A: 512 (enabled)
+    A--&gt;&gt;P: 200 Admin panel
+    Note over D: IT disables Priya: userAccountControl = 514
+    P-&gt;&gt;A: GET /me (cookie sid)
+    A-&gt;&gt;D: Search (objectGUID=Priya's) read userAccountControl
+    D--&gt;&gt;A: 514 (disabled)
+    A--&gt;&gt;P: 401 Your account was disabled or removed
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: the app logs in to AD as itself once, over TLS.</li>
+          <li>Steps 4–5: <b>search</b> finds Priya's DN and direct group. The input was escaped (here it has no special characters).</li>
+          <li>Steps 6–7: <b>bind</b> as Priya on a <b>new</b> connection. This is the actual password check.</li>
+          <li>Steps 8–11: follow nested groups up to Portal-Users. Step 12: our own session cookie.</li>
+          <li>Steps 13–20: each request re-checks that the AD account is still enabled, so disabling her in AD ends her session.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="groups">
+      <h2>3. Nested groups</h2>
+      <p class="lead"><code>memberOf</code> lists only direct groups. Priya is directly in IT-Leads only, yet she is an admin.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Group mapped to an app role</span>
+        <span class="chip"><i class="error"></i>No access to ChaiPortal</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart BT
+    PR(["Priya Sharma"]) --&gt; IT["CN=IT-Leads"]
+    IT --&gt; PA["CN=Portal-Admins&lt;br/&gt;role: admin"]
+    PA --&gt; PU["CN=Portal-Users&lt;br/&gt;role: user"]
+    RA(["Rahul Verma"]) --&gt; EN["CN=Engineering"]
+    EN --&gt; PU
+    NE(["Neha Gupta"]) --&gt; FI["CN=Finance"]
+    FI --&gt; X[/"not in Portal-Users: 403"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class PA,PU ok
+    class X error
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Arrows mean "is a member of". Read from the bottom up.</li>
+          <li>Priya → IT-Leads → Portal-Admins → Portal-Users, so she gets <b>user</b> and <b>admin</b>.</li>
+          <li>Rahul → Engineering → Portal-Users, so he gets <b>user</b> only.</li>
+          <li>Neha's Finance group isn't inside Portal-Users: right password, no access.</li>
+        </ol>
+        <p class="tip">Match roles on the <b>full DN</b> (<code>CN=Portal-Admins,OU=Groups,DC=chaicorp,DC=local</code>), never on the name alone. AD can also resolve the chain in one search with the rule <code>1.2.840.113556.1.4.1941</code>.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="injection">
+      <h2>4. LDAP injection</h2>
+      <p class="lead">The same search box input, <code>Priya*)(salary=2*</code>, glued into the filter vs escaped.</p>
+      <div class="legend">
+        <span class="chip"><i class="error"></i>Input became filter code</span>
+        <span class="chip"><i class="ok"></i>Input stayed data</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["q = Priya*)(salary=2*"]) --&gt; F1["(&amp;(objectClass=user)(cn=Priya*)(salary=2*))"]
+    F1 --&gt; R1{"Any result?"}
+    R1 -- "1 entry" --&gt; L1[/"Salary starts with 2.&lt;br/&gt;Try 20*, 21*, … next digit"/]
+    R1 -- "[]" --&gt; L2[/"Not 2, try the next digit"/]
+    L1 --&gt; W[/"About 45 requests:&lt;br/&gt;2475000"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class F1,L1,L2,W error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["q = Priya*)(salary=2*"]) --&gt; E["escapeFilter:&lt;br/&gt;* to \2a, ( to \28, ) to \29"]
+    E --&gt; F2["(cn=Priya\2a\29\28salary=2\2a*)&lt;br/&gt;one condition on cn"]
+    F2 --&gt; R2[/"No name looks like that: []&lt;br/&gt;nothing to learn"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class E,F2,R2 ok
+</pre></div>
+      </div>
+      <aside style="margin-top: 16px">
+        <h3>How to read it</h3>
+        <ol>
+          <li>Left: the <code>)(</code> in the input closes the <code>cn</code> condition and opens a new one on <code>salary</code>. The app never returns salary, but "1 result vs 0" answers yes/no questions about it.</li>
+          <li>Right: after escaping, the brackets and stars are plain characters inside one <code>cn</code> value. Our own trailing <code>*</code> still gives "starts with" search.</li>
+          <li>Same idea as SQL injection: <b>input is data, never filter code</b>.</li>
+        </ol>
+        <p class="tip">Also limit the damage: search only <code>OU=People</code>, ask for only public attributes, require login, and give the service account read access only to what the app needs.</p>
+      </aside>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

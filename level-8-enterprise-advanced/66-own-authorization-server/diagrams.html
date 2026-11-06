@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>66. Own Authorization Server: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 66</div>
+    <h1>Own Authorization Server: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">own authorization server notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#tokens">3. Refresh and machine tokens</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check ChaiCart ID makes, from the first <code>/authorize</code> request to the API accepting the access token. Each red box is the attack that check stops.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Accepted / safe outcome</span>
+        <span class="chip"><i class="error"></i>Rejected (an attack stopped here)</span>
+        <span class="chip"><i class="trap"></i>Careful: input from the browser</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["App sends browser to /authorize&lt;br/&gt;client_id, redirect_uri, scope,&lt;br/&gt;state, nonce, code_challenge"]) --&gt; C{"client_id registered?"}
+    C -- No --&gt; E1[/"400 error page&lt;br/&gt;(no redirect)"/]
+    C -- Yes --&gt; R{"redirect_uri exactly&lt;br/&gt;in the client's list?"}
+    R -- No --&gt; E2[/"400 error page: stops&lt;br/&gt;open redirect and code theft"/]
+    R -- Yes --&gt; P{"PKCE S256 and&lt;br/&gt;allowed scopes?"}
+    P -- No --&gt; E3[/"redirect back with&lt;br/&gt;error and state"/]
+    P -- Yes --&gt; L["OUR login + consent page&lt;br/&gt;(the app never sees the password)"]
+    L --&gt; D{"Password OK and&lt;br/&gt;user clicked Allow?"}
+    D -- No --&gt; E4[/"401 form again, or&lt;br/&gt;error=access_denied"/]
+    D -- Yes --&gt; K["Store sha256(code) for 60 s&lt;br/&gt;redirect: code, state, iss"]
+    K --&gt; T{"POST /token: code unused,&lt;br/&gt;same client + redirect_uri,&lt;br/&gt;sha256(verifier) = challenge?"}
+    T -- "Code used twice" --&gt; E5[/"invalid_grant and&lt;br/&gt;revoke its tokens"/]
+    T -- "Wrong verifier" --&gt; E6[/"invalid_grant:&lt;br/&gt;stolen code is useless"/]
+    T -- Yes --&gt; I["Sign access token (at+jwt, aud API)&lt;br/&gt;+ ID token (aud app, nonce)&lt;br/&gt;+ refresh token (opaque, hashed)"]
+    I --&gt; V{"API: kid in JWKS, typ at+jwt,&lt;br/&gt;iss, aud, exp, scope OK?"}
+    V -- No --&gt; E7[/"401 invalid_token&lt;br/&gt;or 403 insufficient_scope"/]
+    V -- Yes --&gt; OK[/"200 orders"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4,E5,E6,E7 error
+    class OK,I ok
+    class A,L trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The first two checks fail <b>on our own page</b>. Until <code>redirect_uri</code> matches a registered value exactly, redirecting anywhere would be an open redirect.</li>
+          <li>After that, errors go back to the app as <code>?error=…&amp;state=…</code>, so the app can show them.</li>
+          <li>The login form is on the <b>authorization server's</b> page. That's the whole point of OAuth: the app never touches the password.</li>
+          <li><code>/token</code> checks the code against everything stored with it. PKCE means a stolen code can't be used without the verifier.</li>
+          <li>The API trusts the token only after checking it with the AS's <b>public</b> key from JWKS.</li>
+        </ol>
+        <p class="tip">The yellow boxes hold values that came from the browser. The POST to <code>/authorize</code> checks them all again, because hidden form fields can be edited.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul logs in to the ChaiCart web app through ChaiCart ID, with the real requests from the demo (ports 3166 and 3167).</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul's browser
+    participant W as ChaiCart Web (chaicart-spa)
+    participant AS as ChaiCart ID (localhost:3166)
+    participant API as Orders API (localhost:3167)
+
+    Note over W: verifier = 32 random bytes / challenge = SHA256(verifier)
+    W-&gt;&gt;R: 302 to AS /authorize?client_id=chaicart-spa&amp;code_challenge=...&amp;state=xyz&amp;nonce=n-42
+    R-&gt;&gt;AS: GET /authorize?...
+    AS--&gt;&gt;R: 200 login + consent page (hidden fields carry the request)
+    R-&gt;&gt;AS: POST /authorize (email, password, decision=allow + hidden fields)
+    Note over AS: store sha256(code) with client, redirect_uri, challenge, nonce (60 s)
+    AS--&gt;&gt;R: 302 localhost:5173/callback?code=Q3x...&amp;state=xyz&amp;iss=localhost:3166
+    R-&gt;&gt;W: GET /callback?code=...&amp;state=xyz
+    Note over W: state matches what it saved?
+    W-&gt;&gt;AS: POST /token grant_type=authorization_code, code, code_verifier, client_id
+    Note over AS: unused? same client + redirect_uri? SHA256(verifier) = challenge?
+    AS--&gt;&gt;W: access_token (at+jwt) + id_token (nonce n-42) + refresh_token
+    W-&gt;&gt;API: GET /orders (Bearer access_token)
+    API-&gt;&gt;AS: GET /.well-known/openid-configuration, then GET /jwks.json (once, cached)
+    AS--&gt;&gt;API: keys: RSA public key, kid chaicart-2026-11
+    Note over API: verify RS256, iss, aud chaicart-api, exp, typ, scope orders:read
+    API--&gt;&gt;W: 200 Rahul's 2 orders
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–3: the app only builds a URL. The browser goes to the AS, and the AS shows <b>its own</b> login page.</li>
+          <li>Step 6: the code travels through the browser, so it's treated as exposed. That's why it's short-lived, single-use and bound to PKCE.</li>
+          <li>Step 8: the code is swapped for tokens <b>directly</b> between the app and the AS (a back-channel call).</li>
+          <li>Steps 10–12: the API needs no shared secret with the AS. It downloads the public key once and checks every token itself.</li>
+        </ol>
+        <p class="tip">The ID token is for the <b>app</b> (aud = <code>chaicart-spa</code>). Send it to the API and it gets 401: wrong <code>typ</code>, wrong <code>aud</code>.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="tokens">
+      <h2>3. Refresh rotation and machine tokens</h2>
+      <p class="lead">Left: what happens when a refresh token is used twice. Right: the nightly reports job, which has no user at all.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>New tokens issued</span>
+        <span class="chip"><i class="error"></i>Rejected / chain revoked</span>
+      </div>
+      <div class="layout wide">
+      <div class="pair">
+        <div class="diagram"><h3>Refresh token rotation</h3><pre class="mermaid">
+flowchart TD
+    R1(["POST /token grant_type=refresh_token&lt;br/&gt;refresh token RT1"]) --&gt; F{"RT1 known, not expired,&lt;br/&gt;family not revoked?"}
+    F -- No --&gt; X1[/"invalid_grant"/]
+    F -- Yes --&gt; U{"RT1 already used?"}
+    U -- "No: mark used" --&gt; N[/"New access token&lt;br/&gt;+ new refresh token RT2"/]
+    U -- "Yes: someone kept a copy" --&gt; X2[/"Revoke the whole family:&lt;br/&gt;RT2 dies too, log in again"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class X1,X2 error
+    class N ok
+</pre></div>
+        <div class="diagram"><h3>client_credentials (no user)</h3><pre class="mermaid">
+flowchart TD
+    J(["reports-job: POST /token&lt;br/&gt;Basic reports-job + secret&lt;br/&gt;grant_type=client_credentials"]) --&gt; S{"Secret hash matches&lt;br/&gt;and grant allowed?"}
+    S -- No --&gt; X[/"401 invalid_client"/]
+    S -- Yes --&gt; A[/"Access token only&lt;br/&gt;sub = reports-job&lt;br/&gt;no ID token, no refresh"/]
+    A --&gt; O[/"GET /orders: all orders&lt;br/&gt;(caller is a machine)"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class X error
+    class A,O ok
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Every refresh gives a <b>new</b> refresh token and marks the old one used (topic 23).</li>
+          <li>A used token coming back means two people have it. The AS can't tell who's the thief, so it kills the whole chain.</li>
+          <li>A machine client proves itself with its <b>secret</b>. There's no user to log in, so there's nothing to refresh: it just asks again.</li>
+        </ol>
+        <p class="tip">Already-issued access tokens (JWTs) still work until they expire, even after revocation. Keep them short, or use introspection (topic 70).</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

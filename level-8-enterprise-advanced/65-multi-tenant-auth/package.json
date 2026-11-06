@@ -1,0 +1,10 @@
+{
+  "name": "65-multi-tenant-auth",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

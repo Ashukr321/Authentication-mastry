@@ -1,0 +1,10 @@
+{
+  "name": "68-service-to-service-mtls",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

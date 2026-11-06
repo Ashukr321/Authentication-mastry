@@ -1,0 +1,10 @@
+{
+  "name": "69-zero-trust-api-gateway",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}

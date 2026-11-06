@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>65. Multi-Tenant Auth: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 65</div>
+    <h1>Multi-Tenant Auth: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">multi-tenant auth notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#attacks">2. Data flow: cross-tenant attacks</a>
+    <a href="#switch">3. Data flow: switching workspaces</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check a request goes through on the safe routes, from the subdomain down to the database filter.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Safe outcome</span>
+        <span class="chip"><i class="error"></i>Data leaks (vulnerable route)</span>
+        <span class="chip"><i class="trap"></i>Client-controlled: never trust it alone</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Request to acme.localhost"]) --&gt; B{"Subdomain is a&lt;br/&gt;known tenant?"}
+    B -- No --&gt; OK1[/"404 Unknown workspace"/]
+    B -- Yes --&gt; C{"Valid bearer token?&lt;br/&gt;sha256 found, not expired"}
+    C -- No --&gt; OK2[/"401 Not signed in"/]
+    C -- Yes --&gt; D{"Token's tenant ==&lt;br/&gt;request's tenant?"}
+    D -- No --&gt; OK3[/"401 Token is for a&lt;br/&gt;different workspace"/]
+    D -- Yes --&gt; E{"Tenant active and user&lt;br/&gt;STILL a member here?"}
+    E -- No --&gt; OK4[/"403 suspended / not a member"/]
+    E -- Yes --&gt; F["role = membership role&lt;br/&gt;in THIS tenant"]
+    F --&gt; G{"Route needs admin?"}
+    G -- "Yes, role is member" --&gt; OK5[/"403 Only admins of this tenant"/]
+    G -- "No, or role is admin" --&gt; H["Query WHERE tenant_id = token's tenant"]
+    H --&gt; OK6[/"Only this tenant's rows&lt;br/&gt;other tenants' ids give 404"/]
+
+    V(["Vulnerable routes"]) --&gt; X{"X-Tenant header&lt;br/&gt;or id with no tenant filter"}
+    X --&gt; E1[/"Another company's invoices leak"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1 error
+    class OK1,OK2,OK3,OK4,OK5,OK6 ok
+    class X trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>subdomain</b> is only a lookup key. An unknown one stops the request at once.</li>
+          <li>A token is valid for <b>one</b> tenant. A real Zenith token on Acme's subdomain is refused.</li>
+          <li>Membership and tenant status are checked on <b>every</b> request, so "remove member" and "suspend tenant" work instantly.</li>
+          <li>The <b>role</b> comes from the membership in <b>this</b> tenant, never from the user alone.</li>
+          <li>Every query is filtered by the tenant from the token. Another tenant's row looks exactly like a missing one: 404.</li>
+          <li>The yellow box is the bug: a tenant id the <b>client</b> chose (header) or no tenant filter at all.</li>
+        </ol>
+        <p class="tip">Every box here was hit in the demo's curl run in the README.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="attacks">
+      <h2>2. Data flow: cross-tenant attacks</h2>
+      <p class="lead">Vikram (admin of Zenith) tries three ways into Acme's invoices, with the real replies from our run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    participant Z as zenith.localhost
+    participant A as acme.localhost
+
+    V-&gt;&gt;A: POST /login (Vikram's correct password)
+    A--&gt;&gt;V: 401 Wrong email or password (not an Acme member)
+    V-&gt;&gt;Z: POST /login (Vikram's correct password)
+    Z--&gt;&gt;V: 200 token for tenant zenith, role admin, 30 min
+    V-&gt;&gt;A: GET /invoices (Bearer Zenith token)
+    A--&gt;&gt;V: 401 This token is for a different workspace ✓
+    Note over V,Z: ❌ Bug 1: tenant taken from a header
+    V-&gt;&gt;Z: GET /vulnerable/invoices, X-Tenant acme
+    Z--&gt;&gt;V: 200 inv_101 Sharma Stores, inv_102 Gupta and Sons 😱
+    Note over V,Z: ❌ Bug 2: lookup by id with no tenant filter
+    V-&gt;&gt;Z: GET /vulnerable/invoices/inv_102
+    Z--&gt;&gt;V: 200 tenantId t_1, amount ₹1,20,000 😱
+    Note over V,Z: ✅ Safe route adds AND tenant_id = t_2
+    V-&gt;&gt;Z: GET /invoices/inv_102
+    Z--&gt;&gt;V: 404 Invoice not found ✓
+    V-&gt;&gt;Z: GET /invoices/inv_201
+    Z--&gt;&gt;V: 200 Mehta Fabrics, ₹8,500 (his own)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: a correct password isn't enough. No Acme membership, no Acme login (and the error doesn't say why).</li>
+          <li>Steps 5–6: a real token, but for the wrong tenant.</li>
+          <li>Steps 7–8: the vulnerable route asks the <b>client</b> which tenant it is. Vikram just writes "acme".</li>
+          <li>Steps 9–10: cross-tenant IDOR. The id is all it needs, so any guessed or leaked id works.</li>
+          <li>Steps 11–14: the safe route answers 404 for Acme's invoice, exactly like a missing one.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="switch">
+      <h2>3. Data flow: switching workspaces</h2>
+      <p class="lead">Priya is admin in Acme, member in Zenith and Nimbus. Switching gives a new token, and every check runs again.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor P as Priya
+    participant A as acme.localhost
+    participant Z as zenith.localhost
+
+    P-&gt;&gt;A: POST /login (Priya's password)
+    A--&gt;&gt;P: 200 token for acme, role admin, 8 hours
+    P-&gt;&gt;A: GET /workspaces
+    A--&gt;&gt;P: acme (admin), zenith (member), nimbus (member)
+    P-&gt;&gt;A: POST /switch, tenant zenith
+    Note over A: member of zenith? yes. active? yes. password login allowed? yes
+    A--&gt;&gt;P: 200 NEW token for zenith, role member, 30 min
+    P-&gt;&gt;Z: GET /members (Zenith token)
+    Z--&gt;&gt;P: 403 Only admins of Zenith Textiles ✓
+    P-&gt;&gt;A: GET /members (Acme token)
+    A--&gt;&gt;P: 200 Priya admin, Rahul member
+    P-&gt;&gt;A: POST /switch, tenant nimbus
+    Note over A: Nimbus policy says SSO only
+    A--&gt;&gt;P: 403 requires sign-in through its company SSO ✓
+    P-&gt;&gt;A: DELETE /members/Rahul's account
+    A--&gt;&gt;P: 200 removed, Rahul's Acme tokens deleted
+    P-&gt;&gt;Z: POST /logout (Zenith token)
+    Z--&gt;&gt;P: 200 Logged out (the Acme token still works)
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Steps 1–4: one identity, one login, but the token is for <b>Acme only</b>. The picker lists only her own memberships.</li>
+          <li>Steps 5–7: switching issues a <b>new token</b> after checking membership, status and Zenith's own policy (shorter tokens).</li>
+          <li>Steps 8–11: the same person is admin in one tenant and a member in another.</li>
+          <li>Steps 12–14: Nimbus's "SSO only" rule can't be skipped by switching from a password session.</li>
+          <li>Steps 15–18: removal and logout are per tenant. Nothing in one tenant changes another.</li>
+        </ol>
+        <p class="tip">Not shown: OldCo is suspended, so even Meera's correct password gets a 403.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

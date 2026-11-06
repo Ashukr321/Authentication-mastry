@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>57. SSO Concepts: IdP vs SP: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 8 · TOPIC 57</div>
+    <h1>SSO Concepts: IdP vs SP: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">SSO concepts notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#sessions">3. Three sessions</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">From "Rahul opens HR Portal" to "he's in". The top half is the IdP deciding whether to ask for a password; the bottom half is the app checking the assertion.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Signed in</span>
+        <span class="chip"><i class="error"></i>Refused (an attack stopped)</span>
+        <span class="chip"><i class="trap"></i>The single sign-on shortcut</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Rahul opens HR Portal"]) --&gt; B{"HR session cookie?"}
+    B -- Yes --&gt; OK1[/"In: the app's own session"/]
+    B -- No --&gt; C["Redirect to the IdP&lt;br/&gt;sp=hr-portal, request_id, relay_state"]
+    C --&gt; D{"App registered&lt;br/&gt;at the IdP?"}
+    D -- No --&gt; E0[/"400 Unknown app"/]
+    D -- Yes --&gt; F{"IdP session cookie?"}
+    F -- "Yes: SSO" --&gt; G["No password asked"]
+    F -- No --&gt; H["IdP login page:&lt;br/&gt;password (+ MFA) typed here only"]
+    H --&gt; G
+    G --&gt; I["IdP signs an assertion:&lt;br/&gt;aud hr-portal, inResponseTo, exp 2 min"]
+    I --&gt; J["Browser auto-POSTs it&lt;br/&gt;to the registered ACS URL"]
+    J --&gt; K{"Signature valid&lt;br/&gt;with the pinned key?"}
+    K -- No --&gt; E1[/"401 Bad signature"/]
+    K -- Yes --&gt; L{"iss, aud, acs, exp OK?"}
+    L -- No --&gt; E2[/"401 wrong app / expired"/]
+    L -- Yes --&gt; M{"Seen this assertion id?"}
+    M -- Yes --&gt; E3[/"401 Replay"/]
+    M -- No --&gt; N{"inResponseTo = request&lt;br/&gt;this browser started?"}
+    N -- No --&gt; E4[/"401 Unsolicited / not yours"/]
+    N -- Yes --&gt; O["Local user by sub (JIT),&lt;br/&gt;new app session"]
+    O --&gt; OK2[/"In: redirect to relay_state"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E0,E1,E2,E3,E4 error
+    class OK1,OK2 ok
+    class G trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The app first checks <b>its own</b> session. Only without one does SSO start.</li>
+          <li>The IdP only works for <b>registered</b> apps and only sends to their <b>fixed</b> ACS URL.</li>
+          <li>The yellow box is the whole point of SSO: with an IdP session, <b>no password</b> is asked.</li>
+          <li>The app checks the <b>signature first</b>, then every field. Each red box is an attack from the demo.</li>
+          <li>Users are matched by the IdP's stable <code>sub</code>, never by email alone.</li>
+        </ol>
+        <p class="tip">Every red box was hit in the README's curl run (steps ⑥ to ⑩).</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul signs in to HR Portal (password typed) and then Payroll (no password), with values from our test run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul's browser
+    participant H as HR Portal (SP, 3058)
+    participant I as ChaiCorp Login (IdP, 3057)
+    participant P as Payroll (SP, 3059)
+
+    Note over H,I: once, at setup: HR pins the IdP's public key (metadata), the IdP registers HR's ACS URL
+    R-&gt;&gt;H: GET /
+    H--&gt;&gt;R: 302 to IdP /sso?sp=hr-portal and request_id=2LRxiT5D… (cookie hr_req)
+    R-&gt;&gt;I: GET /sso?sp=hr-portal and request_id=2LRxiT5D…
+    I--&gt;&gt;R: login page (no IdP session yet)
+    R-&gt;&gt;I: POST /sso with Rahul's password
+    Note over I: password OK: new IdP session (cookie idp_sid), sign the assertion
+    I--&gt;&gt;R: auto-submit form to HR's ACS { assertion: aud hr-portal, inResponseTo 2LRxiT5D…, exp +120 s }
+    R-&gt;&gt;H: POST /acs { assertion, relay_state: / }
+    Note over H: signature, iss, aud, acs, exp, replay, inResponseTo all OK
+    H--&gt;&gt;R: 303 to / (cookie hr_sid, HR's own session)
+    R-&gt;&gt;P: GET /
+    P--&gt;&gt;R: 302 to IdP /sso?sp=payroll and a new request_id
+    R-&gt;&gt;I: GET /sso?sp=payroll (cookie idp_sid)
+    Note over I: IdP session found: NO password
+    I--&gt;&gt;R: auto-submit form to Payroll's ACS { assertion: aud payroll }
+    R-&gt;&gt;P: POST /acs { assertion }
+    P--&gt;&gt;R: 303 to / (cookie payroll_sid) ✓ single sign-on
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>The apps and the IdP <b>never talk directly</b> during login: the browser carries every message (redirects and an auto-submitting form).</li>
+          <li>Steps 1–2: HR remembers the <code>request_id</code> in a cookie, so the answer must belong to <b>this</b> browser.</li>
+          <li>Steps 5–7: the password is typed <b>only at the IdP</b>. HR never sees it.</li>
+          <li>Steps 8–10: HR checks the assertion, then creates its <b>own</b> session.</li>
+          <li>Steps 11–17: Payroll goes through the same dance, but the IdP already has a session: no login page.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="sessions">
+      <h2>3. Three sessions</h2>
+      <p class="lead">After step 17 Rahul has three separate sessions. Ending one doesn't end the others.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Still logged in</span>
+        <span class="chip"><i class="error"></i>Logged out</span>
+        <span class="chip"><i class="trap"></i>Surprise for beginners</span>
+      </div>
+      <div class="layout wide">
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Log out of HR Portal"]) --&gt; B[/"hr_sid deleted"/]
+    B --&gt; C["Open HR Portal again"]
+    C --&gt; D["Redirect to the IdP:&lt;br/&gt;idp_sid still there"]
+    D --&gt; E[/"Back in without a password"/]
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class B error
+    class E trap
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Log out of the IdP"]) --&gt; B[/"idp_sid deleted"/]
+    B --&gt; C[/"Payroll still works:&lt;br/&gt;payroll_sid has its own life"/]
+    B --&gt; D[/"New app login:&lt;br/&gt;password asked again"/]
+    C -. "fix" .-&gt; F["Single Logout (topic 61)&lt;br/&gt;or short app sessions"]
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class B,D error
+    class C trap
+    class F ok
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Left:</b> logging out of one app only ends that app's session. Because the IdP session is alive, the next visit is an instant SSO login. Users often think "logout is broken".</li>
+          <li><b>Right:</b> logging out of the IdP stops <b>new</b> logins, but apps that already have their own session keep working until it expires.</li>
+          <li>The same is true when an admin <b>disables</b> a user at the IdP: keep app sessions short, and use Single Logout (topic 61) or SCIM (topic 62) to end them.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

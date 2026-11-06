@@ -1,0 +1,10 @@
+{
+  "name": "71-fine-grained-authz-zanzibar-opa",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
