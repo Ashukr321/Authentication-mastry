@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>55. Audit Logs &amp; Login Alerts: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 55</div>
+    <h1>Audit Logs &amp; Login Alerts: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">audit logs &amp; login alerts notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#chain">3. Hash chain</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What ChaiPay does on every login attempt. Every path writes to the audit log; only unusual ones email the owner.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Normal, no alert</span>
+        <span class="chip"><i class="error"></i>Refused</span>
+        <span class="chip"><i class="trap"></i>Alert the account owner</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /login&lt;br/&gt;email + password"]) --&gt; B{"Password&lt;br/&gt;correct?"}
+    B -- "No, unknown email" --&gt; U["audit login.failure&lt;br/&gt;reason unknown_user&lt;br/&gt;only a hash of what was typed"]
+    U --&gt; R401[/"401 Wrong email or password"/]
+    B -- "No, real account" --&gt; F["audit login.failure&lt;br/&gt;target = Rahul, reason wrong_password"]
+    F --&gt; C{"5 or more failures&lt;br/&gt;in 15 min?"}
+    C -- No --&gt; R401
+    C -- "Yes, and no alert this hour" --&gt; AF[/"Email: several failed&lt;br/&gt;sign-in attempts"/]
+    AF --&gt; R401
+    B -- Yes --&gt; S["audit login.success&lt;br/&gt;new session + did cookie"]
+    S --&gt; D{"First login ever?"}
+    D -- Yes --&gt; OK1[/"200, no alert:&lt;br/&gt;nothing to compare with"/]
+    D -- No --&gt; E{"Known device&lt;br/&gt;AND known country?"}
+    E -- Yes --&gt; OK2[/"200, no alert"/]
+    E -- No --&gt; AN[/"200 + email: new sign-in&lt;br/&gt;with a This wasn't me link"/]
+    AN --&gt; AS["audit alert.sent"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class R401 error
+    class OK1,OK2 ok
+    class AF,AN trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Every</b> attempt, good or bad, becomes an audit entry. None of them contains the password.</li>
+          <li>Both kinds of failure return the <b>same</b> 401 to the client (topic 51). Only the log knows the reason.</li>
+          <li>The failure count comes <b>from the audit log itself</b>: the log is your detection data.</li>
+          <li>On success, the browser's <code>did</code> cookie and the country are compared with Rahul's history.</li>
+          <li>Yellow boxes send an email to the <b>account owner</b>. The failed-logins email is limited to one per hour.</li>
+        </ol>
+        <p class="tip">A known device logging in from home again sends nothing. Alerting on every login teaches users to ignore you.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Vikram logs in with Rahul's leaked password. Rahul gets the email and throws him out. Real values from our test run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram (script, RU)
+    participant C as ChaiPay (localhost:3055)
+    participant L as Audit log
+    actor R as Rahul (email inbox)
+
+    V-&gt;&gt;C: POST /login { email: Rahul's, password: "password123" } x5
+    C-&gt;&gt;L: entries 3 to 7, login.failure (wrong_password, country RU)
+    C-&gt;&gt;R: Several failed sign-in attempts (5 in 15 min)
+    C--&gt;&gt;V: 401 Wrong email or password
+    V-&gt;&gt;C: POST /login with the REAL password (leaked elsewhere)
+    Note over C: no did cookie = new device, RU not in Rahul's countries
+    C-&gt;&gt;L: entry 11, login.success (newDevice true, country RU)
+    C-&gt;&gt;R: New sign-in from a new device and a new country (RU) + not-me link
+    C--&gt;&gt;V: 200 + sid cookie
+    R-&gt;&gt;C: GET /security/not-me?token=M6FVaMJo...
+    C--&gt;&gt;R: a page with a form (GET changes nothing)
+    R-&gt;&gt;C: POST /security/not-me { token, newPassword }
+    Note over C: new password, delete ALL 3 sessions, forget 2 devices, token used up
+    C-&gt;&gt;L: entry 18 password.changed, entry 19 account.secured
+    C-&gt;&gt;R: Your password was changed (no link)
+    V-&gt;&gt;C: GET /me/activity (old sid cookie)
+    C--&gt;&gt;V: 401 Not signed in ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests or writes, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: guessing fails, but each try is logged and the 5th triggers a heads-up to Rahul.</li>
+          <li>Steps 5–9: the real password works. Login alerts don't <b>block</b> the attacker; they make sure the owner <b>knows within seconds</b>.</li>
+          <li>Steps 10–11: the email link only opens a page, because email scanners open links on their own.</li>
+          <li>Steps 12–15: one POST changes the password and revokes <b>every</b> session, then confirms by email without any link.</li>
+          <li>Steps 16–17: Vikram's session is gone, and the leaked password no longer works.</li>
+        </ol>
+        <p class="tip">With MFA (topic 45), step 5 would have stopped at "enter your code". Alerts are the safety net for accounts that don't have it.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="chain">
+      <h2>3. Hash chain: why deleting an entry is noticed</h2>
+      <p class="lead">Each entry stores the hash of the entry before it. An insider deletes #11 (Vikram's login) straight from the database.</p>
+      <div class="layout wide">
+        <div class="pair">
+          <div class="diagram"><h3>✅ Untouched</h3><p class="lead">Every prevHash matches</p><pre class="mermaid">
+flowchart TB
+    E10["#10 login.failure&lt;br/&gt;hash: 5d55..."] --&gt; E11["#11 login.success RU&lt;br/&gt;prevHash: 5d55...&lt;br/&gt;hash: 7a1e..."]
+    E11 --&gt; E12["#12 alert.sent&lt;br/&gt;prevHash: 7a1e..."]
+    E12 --&gt; V1[/"verify: ok, 23 entries"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class V1 ok
+</pre></div>
+          <div class="diagram"><h3>❌ #11 deleted</h3><p class="lead">#12 points at a hash that isn't there</p><pre class="mermaid">
+flowchart TB
+    F10["#10 login.failure&lt;br/&gt;hash: 5d55..."] --&gt; F12["#12 alert.sent&lt;br/&gt;prevHash: 7a1e...&lt;br/&gt;expected: 5d55..."]
+    F12 --&gt; V2[/"verify: broken at #12&lt;br/&gt;entry before it missing or changed"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class V2 error
+</pre></div>
+        </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><code>hash = sha256(prevHash + the entry as JSON)</code>, so each entry depends on <b>all</b> entries before it.</li>
+          <li><b>Delete</b> an entry: the next one's <code>prevHash</code> no longer matches.</li>
+          <li><b>Edit</b> an entry: its own hash no longer matches its content.</li>
+          <li>Someone who rewrites the <b>whole</b> chain can recompute every hash, so copy the latest hash somewhere the app can't write, and ship entries to write-once storage.</li>
+        </ol>
+        <p class="tip">The demo's <code>POST /demo/tamper</code> plays this insider. Run <code>/admin/audit/verify</code> before and after.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

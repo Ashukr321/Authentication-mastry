@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>54. Secrets Management &amp; Key Rotation: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 54</div>
+    <h1>Secrets Management &amp; Key Rotation: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">secrets management &amp; key rotation notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#lifecycle">3. Key lifecycle</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">How PaisaVault checks a JWT against its key ring, and how a signing-key rotation moves through it. Planned rotation logs nobody out; an emergency one logs out everyone holding a token from the leaked key, on purpose.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Accepted / safe</span>
+        <span class="chip"><i class="error"></i>Rejected (401 / refused)</span>
+        <span class="chip"><i class="trap"></i>Careful: the overlap window</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    BOOT(["Server starts"]) --&gt; S{"ADMIN_TOKENS set&lt;br/&gt;and 32+ chars?"}
+    S -- No --&gt; X0[/"Refuse to start:&lt;br/&gt;fail fast"/]
+    S -- Yes --&gt; REQ(["Request with a JWT"])
+    REQ --&gt; A{"header alg&lt;br/&gt;is EdDSA?"}
+    A -- "No: none / HS256" --&gt; X1[/"401 Unexpected alg"/]
+    A -- Yes --&gt; K{"kid found in&lt;br/&gt;OUR key ring?"}
+    K -- "No: retired or made up" --&gt; X2[/"401 Unknown or&lt;br/&gt;retired signing key"/]
+    K -- "sig-1: verify-only" --&gt; W["Old token, still valid&lt;br/&gt;during the overlap"]
+    K -- "sig-2: current" --&gt; V
+    W --&gt; V{"Signature OK&lt;br/&gt;and not expired?"}
+    V -- No --&gt; X3[/"401"/]
+    V -- Yes --&gt; OK[/"200: request served"/]
+    W -. "after 15 min (planned)&lt;br/&gt;or NOW (key leaked)" .-&gt; R["Admin retires sig-1"]
+    R -.-&gt; X2
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X0,X1,X2,X3 error
+    class OK ok
+    class W,R trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Boot</b>: a missing or weak secret stops the server at once, instead of failing quietly in production.</li>
+          <li>The <b>algorithm is pinned</b> before any key is touched, so <code>alg: none</code> never gets further (topic 53).</li>
+          <li>The <code>kid</code> only <b>selects</b> a key from our own ring. An unknown <code>kid</code> is a 401, never a lookup somewhere else.</li>
+          <li>After a rotation, the old key is <b>verify-only</b> (yellow): old tokens keep working, new tokens use the new key.</li>
+          <li>Retiring the old key (dashed) sends its tokens to the red box: after one token lifetime in a planned rotation, or immediately if it leaked.</li>
+        </ol>
+        <p class="tip">The current key can't be retired. The demo answers <code>409 Rotate first, then retire it.</code></p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rotating the key that encrypts Rahul's PAN, with the real values from our test run on port 3054.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor R as Rahul
+    actor A as Admin
+    participant P as PaisaVault
+    participant D as Database row
+
+    R-&gt;&gt;P: PUT /api/me/pan { pan: "ABCDE1234F" }
+    P-&gt;&gt;D: { keyId: "data-1", iv, tag, ciphertext: "Y9t7V1bNoUy/TA==" }
+    P--&gt;&gt;R: 200 { encryptedWith: "data-1" }
+    A-&gt;&gt;P: POST /admin/data-keys/rotate
+    P--&gt;&gt;A: 200 new writes use data-2, 1 row still uses data-1
+    R-&gt;&gt;P: GET /api/me/pan
+    Note over P: row says data-1, so decrypt with data-1 (now decrypt-only)
+    P--&gt;&gt;R: 200 { pan: "******234F", encryptedWith: "data-1" }
+    A-&gt;&gt;P: DELETE /admin/data-keys/data-1
+    P--&gt;&gt;A: 409 1 row still encrypted with data-1, or that data is lost
+    A-&gt;&gt;P: POST /admin/data-keys/reencrypt
+    P-&gt;&gt;D: decrypt with data-1, encrypt with data-2: { keyId: "data-2", ... }
+    P--&gt;&gt;A: 200 Re-encrypted 1 row(s) with data-2
+    A-&gt;&gt;P: DELETE /admin/data-keys/data-1
+    P--&gt;&gt;A: 200 data-1 retired, no data used it ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests or writes, <b>dashed arrows</b> are replies.</li>
+          <li>Step 2: the row stores the <b>key ID</b> next to the ciphertext. The PAN itself is never stored.</li>
+          <li>Steps 4–8: after rotation, old rows still open, because each row names its own key.</li>
+          <li>Steps 9–10: deleting a key that still has rows is <b>refused</b>. Without that key the PAN could never be read again.</li>
+          <li>Steps 11–15: re-encrypt first, then retire. That's the whole recipe.</li>
+        </ol>
+        <p class="tip">In a KMS setup (envelope encryption), step 12 re-wraps a small data key instead of re-encrypting every row.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="lifecycle">
+      <h2>3. Key lifecycle</h2>
+      <p class="lead">Every key, signing or encryption, moves through the same states. Rotation is just a new key entering on the left while the old one moves right.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Normal path</span>
+        <span class="chip"><i class="error"></i>Emergency path</span>
+        <span class="chip"><i class="trap"></i>Overlap: old and new both work</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    G(["Generated in KMS /&lt;br/&gt;secrets manager"]) --&gt; PUB["Published&lt;br/&gt;(in JWKS, not signing yet)"]
+    PUB --&gt; CUR["Current&lt;br/&gt;signs / encrypts"]
+    CUR -- "rotation" --&gt; OLD["Verify-only /&lt;br/&gt;decrypt-only"]
+    OLD -- "tokens expired /&lt;br/&gt;rows re-encrypted" --&gt; RET[/"Retired: destroyed"/]
+    CUR -. "key leaked" .-&gt; EM["Rotate now +&lt;br/&gt;retire immediately"]
+    EM -.-&gt; RET
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class G,PUB,CUR,RET ok
+    class OLD trap
+    class EM error
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Published</b> first: verifiers cache the JWKS, so the new public key should be there before any token uses it.</li>
+          <li><b>Current</b>: exactly one key signs new tokens or encrypts new data.</li>
+          <li><b>Verify/decrypt-only</b> (yellow) is the overlap that makes rotation painless: nothing breaks.</li>
+          <li><b>Retired</b> only when nothing depends on it: no unexpired tokens, no rows.</li>
+          <li>The <b>emergency</b> path (red) skips the overlap. Users log in again; data keys still need re-encryption first.</li>
+        </ol>
+        <p class="tip">Shared secrets (admin tokens, webhook secrets) follow the same idea with two values: <code>ADMIN_TOKENS=old,new</code>, then just <code>new</code>.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

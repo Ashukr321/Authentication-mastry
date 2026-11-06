@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>51. Timing Attacks &amp; User Enumeration: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 51</div>
+    <h1>Timing Attacks &amp; User Enumeration: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">timing attacks &amp; user enumeration notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#compare">3. Leaky vs safe compare</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Vikram sends one email address. Every check below is a place where the reply could differ between "real user" and "nobody". He needs only one difference.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Looks the same for everyone</span>
+        <span class="chip"><i class="error"></i>Leaks "this account exists"</span>
+        <span class="chip"><i class="trap"></i>Looks fixed, still leaks</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Vikram sends: email + a guess"]) --&gt; B{"Same message&lt;br/&gt;and status code?"}
+    B -- "No: 404 No account / 401 Wrong password" --&gt; E1[/"Leak: the message"/]
+    B -- "Yes: 401 Wrong email or password" --&gt; C{"Same work on both paths?&lt;br/&gt;(hash for unknown users too)"}
+    C -- "No: return early, skip scrypt" --&gt; T1[/"Leak: about 2 ms vs 50 ms"/]
+    C -- Yes --&gt; D{"Slow side effects&lt;br/&gt;(email) after the reply?"}
+    D -- "No: await sendEmail first" --&gt; T2[/"Leak: about 2 ms vs 300 ms"/]
+    D -- "Yes: queue / background" --&gt; F{"Rate limited&lt;br/&gt;per IP and per email?"}
+    F -- No --&gt; T3[/"Small leftover gaps can be&lt;br/&gt;averaged out over many tries"/]
+    F -- Yes --&gt; OK[/"Real user and nobody&lt;br/&gt;look identical"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1 error
+    class T1,T2,T3 trap
+    class OK ok
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>message</b> is the obvious leak (red). Topics 06, 07 and 13 already fixed it.</li>
+          <li>The yellow boxes are the sneaky ones: the message is perfect, but the <b>stopwatch</b> still tells the truth.</li>
+          <li>Skipping the slow password hash for unknown emails is the classic login timing leak. Fix: hash against a dummy hash.</li>
+          <li>Waiting for an email before replying is the classic forgot-password leak. Fix: reply first, send later.</li>
+          <li><b>Rate limits</b> don't remove a difference, but they make measuring it take forever.</li>
+        </ol>
+        <p class="tip">Every yellow and red box was measured with curl in the demo: <code>/vulnerable/login</code> and <code>/vulnerable/forgot-password</code>.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Real numbers from the test run: Vikram enumerates users on the vulnerable login, gets nothing from the safe one, then cracks the vault key by timing.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram (curl)
+    participant S as ChaiWallet (localhost:3051)
+
+    V-&gt;&gt;S: POST /vulnerable/login { email: nobody, password: guess123 }
+    Note over S: no user: return at once, no scrypt
+    S--&gt;&gt;V: 404 No account with this email (0.0019 s)
+    V-&gt;&gt;S: POST /vulnerable/login { email: Rahul's, password: guess123 }
+    Note over S: user found: scrypt runs (about 50 ms)
+    S--&gt;&gt;V: 401 Wrong password (0.0499 s) 😱 Rahul is a customer
+    V-&gt;&gt;S: POST /login { email: nobody, password: guess123 }
+    Note over S: scrypt against DUMMY_HASH
+    S--&gt;&gt;V: 401 Wrong email or password (0.097 s)
+    V-&gt;&gt;S: POST /login { email: Rahul's, password: guess123 }
+    Note over S: scrypt against Rahul's hash
+    S--&gt;&gt;V: 401 Wrong email or password (0.114 s) ✓ no way to tell
+    V-&gt;&gt;S: GET /vulnerable/vault?key=3xxxxx
+    S--&gt;&gt;V: 403 Wrong key (0.0015 s)
+    V-&gt;&gt;S: GET /vulnerable/vault?key=4xxxxx
+    Note over S: first char matched, compare kept going
+    S--&gt;&gt;V: 403 Wrong key (0.0550 s): keep "4"
+    Note over V: repeat for each position: 96 requests in total
+    V-&gt;&gt;S: GET /vulnerable/vault?key=4d0fe2
+    S--&gt;&gt;V: 200 Vault open 😱
+    V-&gt;&gt;S: GET /vault?key=4xxxxx (safe: sha256 + timingSafeEqual)
+    S--&gt;&gt;V: 403 Wrong key (0.0019 s), same as every other guess ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies, with the real time curl measured.</li>
+          <li>Steps 1–6: the vulnerable login leaks twice: the <b>message</b> and the <b>time</b>.</li>
+          <li>Steps 7–12: the safe login gives the same reply and does the same scrypt work. The small wobble in time is machine load, not a pattern.</li>
+          <li>Steps 13–18: the leaky compare gets slower with every correct leading character, so Vikram finds the key one character at a time.</li>
+          <li>Steps 19–20: <code>timingSafeEqual</code> on SHA-256 hashes takes the same time no matter how close the guess is.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="compare">
+      <h2>3. Leaky vs safe compare</h2>
+      <p class="lead">Why <code>===</code> leaks and <code>timingSafeEqual</code> doesn't. The secret is <code>4d0fe2</code>; the guess is <code>4d9xxx</code>.</p>
+      <div class="legend">
+        <span class="chip"><i class="error"></i>Time depends on the guess</span>
+        <span class="chip"><i class="ok"></i>Time is always the same</span>
+      </div>
+      <div class="pair">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A1(["guess === secret"]) --&gt; L1{"Same length?"}
+    L1 -- No --&gt; X0[/"Stop: leaks the length"/]
+    L1 -- Yes --&gt; C1["char 1: 4 = 4, continue"]
+    C1 --&gt; C2["char 2: d = d, continue"]
+    C2 --&gt; C3{"char 3: 9 vs 0"}
+    C3 -- different --&gt; X1[/"Stop after 3 checks:&lt;br/&gt;slower than a guess&lt;br/&gt;with 0 right chars"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class X0,X1 error
+</pre></div>
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A2(["timingSafeEqual(sha256(guess), sha256(secret))"]) --&gt; H["Both are 32 bytes:&lt;br/&gt;length can't leak"]
+    H --&gt; ALL["Check all 32 bytes,&lt;br/&gt;never stop early"]
+    ALL --&gt; R[/"Same time for every guess:&lt;br/&gt;nothing to measure"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class R,H ok
+</pre></div>
+      </div>
+      <aside style="margin-top: 16px">
+        <h3>How to read it</h3>
+        <ol>
+          <li>Left: a normal string compare <b>stops at the first difference</b>. More correct leading characters = more work = more time.</li>
+          <li>Even the length check leaks: a wrong length returns faster than the right one.</li>
+          <li>Right: hashing both sides makes them the <b>same length</b>, and <code>timingSafeEqual</code> always looks at every byte.</li>
+          <li>Real <code>===</code> leaks nanoseconds, not 40 ms like our demo, but attackers average thousands of requests to see it.</li>
+        </ol>
+        <p class="tip">Use it for API keys, HMAC webhook signatures, CSRF tokens and OTP codes. For passwords, compare the <b>hashes</b> (scrypt/bcrypt/argon2), never the passwords.</p>
+      </aside>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

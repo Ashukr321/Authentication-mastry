@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>50. Session Fixation &amp; Hijacking: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 50</div>
+    <h1>Session Fixation &amp; Hijacking: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">session fixation &amp; hijacking notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#fixation">2. Data flow: fixation</a>
+    <a href="#hijacking">3. Data flow: hijacking</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every check a session id passes through on ChaiCart's safe routes. Fixation is stopped at login; hijacking is made hard and short-lived.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Safe outcome</span>
+        <span class="chip"><i class="error"></i>Attacker wins (vulnerable route)</span>
+        <span class="chip"><i class="trap"></i>Only a signal: can be faked</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Request arrives with a session id"]) --&gt; B{"Where does the id come from?"}
+    B -- "URL: ?sid=" --&gt; E1[/"Vulnerable: adopted as the cookie&lt;br/&gt;fixation by a link"/]
+    B -- "Cookie" --&gt; C{"Did WE issue it?&lt;br/&gt;sha256 found in sessions"}
+    C -- No --&gt; OK1[/"Ignored: fresh random id issued"/]
+    C -- Yes --&gt; D{"Idle 30 min or&lt;br/&gt;12 h since login?"}
+    D -- Yes --&gt; OK2[/"Session deleted: log in again"/]
+    D -- No --&gt; F{"Logged in from&lt;br/&gt;the same browser?"}
+    F -- "No" --&gt; OK3[/"Session ended for both,&lt;br/&gt;Rahul gets an email"/]
+    F -- "Yes (or UA copied)" --&gt; G["Request allowed"]
+    G --&gt; H{"Logging in now?"}
+    H -- "Safe: POST /login" --&gt; OK4[/"Old id deleted, NEW id issued,&lt;br/&gt;cart copied over"/]
+    H -- "Vulnerable: same id kept" --&gt; E2[/"Whoever knew the id&lt;br/&gt;is now logged in too"/]
+    G --&gt; I{"Dangerous action?&lt;br/&gt;change password"}
+    I -- "No current password" --&gt; OK5[/"403: cookie alone isn't enough"/]
+    I -- "Correct password" --&gt; OK6[/"ALL sessions ended,&lt;br/&gt;this browser gets a new id"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2 error
+    class OK1,OK2,OK3,OK4,OK5,OK6 ok
+    class F trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Ids come from the <b>cookie only</b>, and only ids the server <b>issued</b> count. That alone stops "made-up id in a link".</li>
+          <li><b>Timeouts</b> are checked on the server. The cookie's own expiry doesn't matter: the attacker controls his copy.</li>
+          <li>The <b>browser check</b> (yellow) catches a careless thief, but a careful one copies the User-Agent. It's a signal, not a lock.</li>
+          <li>At <b>login</b> the id is replaced. This is the fixation fix: the id the attacker knows dies right there.</li>
+          <li><b>Dangerous actions</b> ask for the password, and a password change ends <b>every</b> session, including ones you don't know were stolen.</li>
+        </ol>
+        <p class="tip">Every box here was hit in the demo's curl run in the README.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="fixation">
+      <h2>2. Data flow: fixation</h2>
+      <p class="lead">Vikram plants a session id, Rahul logs in. Vulnerable login on top, safe login below, with the real <code>session</code> tags from our run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    participant B as Rahul's browser
+    participant S as ChaiCart (localhost:3050)
+
+    Note over V,S: ❌ Vulnerable routes
+    V-&gt;&gt;S: GET /vulnerable/shop?sid=vikram-chose-this-id-123
+    S--&gt;&gt;V: 200 session 443088c0 (made-up id adopted)
+    V-&gt;&gt;B: "Great chai deals!" link with ?sid=vikram-chose-this-id-123
+    B-&gt;&gt;S: GET /vulnerable/shop?sid=vikram-chose-this-id-123
+    S--&gt;&gt;B: Set-Cookie sid=vikram-chose-this-id-123 (no HttpOnly)
+    B-&gt;&gt;S: POST /vulnerable/login (Rahul's password)
+    S--&gt;&gt;B: 200 Logged in, session 443088c0 (SAME id)
+    V-&gt;&gt;S: GET /vulnerable/me (cookie sid=vikram-chose-this-id-123)
+    S--&gt;&gt;V: 200 email Rahul's, cart Masala chai x2 😱
+
+    Note over V,S: ✅ Safe routes
+    V-&gt;&gt;S: GET /shop (no cookie)
+    S--&gt;&gt;V: Set-Cookie sid=Hhz0k3… (HttpOnly), session 82f26286
+    Note over B: the cookie is planted in Rahul's browser (subdomain, shared PC)
+    B-&gt;&gt;S: POST /login with cookie sid=Hhz0k3…
+    Note over S: delete 82f26286, create a new id, copy the cart
+    S--&gt;&gt;B: Set-Cookie new sid, oldSession 82f26286, session f69d5357
+    V-&gt;&gt;S: GET /me (cookie sid=Hhz0k3…)
+    S--&gt;&gt;V: 401 Not signed in ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: the permissive server accepts an id <b>nobody issued</b>. Vikram didn't even need a real one.</li>
+          <li>Steps 3–5: one click and Rahul's browser carries Vikram's id.</li>
+          <li>Steps 6–7: the login upgrades the <b>same</b> session. Look at the tag: <code>443088c0</code> before and after.</li>
+          <li>Steps 8–9: Vikram is Rahul. No password, no theft.</li>
+          <li>Steps 10–15: even with a planted cookie, the safe login <b>throws the old id away</b>. Vikram's copy is worthless.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="hijacking">
+      <h2>3. Data flow: hijacking</h2>
+      <p class="lead">Rahul's id leaks after login. What each defense does to Vikram's copy.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    participant B as Rahul's browser
+    participant S as ChaiCart (localhost:3050)
+
+    Note over B,V: Rahul's sid leaks (log file, XSS, open Wi-Fi)
+    V-&gt;&gt;S: GET /vulnerable/me (Rahul's sid, UA Vikram-PC)
+    S--&gt;&gt;V: 200 email Rahul's 😱 (no checks)
+    V-&gt;&gt;S: GET /me (Rahul's sid, UA Vikram-PC)
+    Note over S: logged in from Rahul-Laptop-Chrome, now Vikram-PC
+    S--&gt;&gt;V: 401, session f69d5357 deleted
+    S--&gt;&gt;B: email to Rahul "we signed you out"
+    B-&gt;&gt;S: POST /login again, session a6baa358
+    Note over B,V: leaks again, Vikram copies the UA too
+    V-&gt;&gt;S: GET /me (Rahul's sid, UA Rahul-Laptop-Chrome)
+    S--&gt;&gt;V: 200 (the browser signal was faked)
+    V-&gt;&gt;S: POST /account/password, wrong current password
+    S--&gt;&gt;V: 403 Confirm with your current password ✓
+    B-&gt;&gt;S: POST /account/password, correct current password
+    Note over S: delete ALL of Rahul's sessions (2), new id for this browser
+    S--&gt;&gt;B: 200 sessionsEnded 2, session 9ca51ce5
+    V-&gt;&gt;S: GET /me (old sid)
+    S--&gt;&gt;V: 401 Not signed in ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Steps 1–2: the vulnerable route trusts any copy, forever.</li>
+          <li>Steps 3–5: the safe route notices a different browser and ends the session for both sides. Rahul is told.</li>
+          <li>Steps 7–8: a careful thief copies the User-Agent too, and gets in. That's why binding is only one layer.</li>
+          <li>Steps 9–10: the cookie alone can't change the password. A thief has the cookie, not the password.</li>
+          <li>Steps 11–14: Rahul's password change ends <b>every</b> session (including the fixated one from section 2), so every stolen copy dies at once.</li>
+        </ol>
+        <p class="tip">Not shown: the idle (30 min) and absolute (12 h) timeouts end a stolen session even if nobody notices the theft.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

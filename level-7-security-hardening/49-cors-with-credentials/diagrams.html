@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>49. CORS with Credentials: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 49</div>
+    <h1>CORS with Credentials: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">CORS with credentials notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#bugs">3. Allow-list bugs</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">What the PaisaPay API does with a cross-origin request that carries Rahul's cookie, and what the browser then does with the answer.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Allowed / safely refused</span>
+        <span class="chip"><i class="error"></i>Error</span>
+        <span class="chip"><i class="trap"></i>Careful: the server still answers, the browser decides</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Request from another origin&lt;br/&gt;Origin header + cookie sid"]) --&gt; V["Always set Vary: Origin"]
+    V --&gt; Q{"Origin exactly in&lt;br/&gt;ALLOWED_ORIGINS?"}
+    Q -- Yes --&gt; H["ACAO: that exact origin&lt;br/&gt;Allow-Credentials: true"]
+    Q -- No --&gt; N["No CORS headers"]
+    H --&gt; P1{"OPTIONS preflight?"}
+    P1 -- Yes --&gt; OK1[/"204 + Allow-Methods: GET, POST&lt;br/&gt;Allow-Headers: Content-Type&lt;br/&gt;Max-Age: 600"/]
+    P1 -- No --&gt; OK2[/"200 + data:&lt;br/&gt;the page can read it"/]
+    N --&gt; P2{"What kind of request?"}
+    P2 -- "OPTIONS preflight" --&gt; OK3[/"204, no headers:&lt;br/&gt;browser never sends the real request"/]
+    P2 -- "GET" --&gt; T[/"200 + data, but the browser&lt;br/&gt;hides it from the page"/]
+    P2 -- "POST / PUT / DELETE" --&gt; E1[/"403 Origin is not allowed&lt;br/&gt;(CSRF check, topic 47)"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1 error
+    class OK1,OK2,OK3 ok
+    class T trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><code>Vary: Origin</code> goes on <b>every</b> response, because the headers depend on who asked.</li>
+          <li>The only decision is an <b>exact</b> allow-list match. Yes → the origin is echoed back with <code>Allow-Credentials: true</code>.</li>
+          <li>A non-allowed <b>preflight</b> gets no headers, so the browser never sends the JSON POST.</li>
+          <li>The <b>yellow</b> box: for a GET, the server still sends the data. The <b>browser</b> hides it from the page. curl would see it all.</li>
+          <li>Writes from other origins are refused by an <b>Origin check</b>, because CORS alone doesn't stop a request from being sent.</li>
+        </ol>
+        <p class="tip">Never <code>*</code> with credentials: the browser rejects it. The fix is the exact allow-list, not reflecting the Origin.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Rahul is logged in. First the real frontend uses the API, then Vikram's page tries the safe and the broken endpoints. Real values from our test run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    participant W as PaisaPay Web (127.0.0.1:3050)
+    participant B as Rahul's browser
+    participant A as PaisaPay API (localhost:3049)
+    participant E as Vikram's page (127.0.0.1:3051)
+
+    W-&gt;&gt;B: fetch /api/me with credentials include
+    B-&gt;&gt;A: GET /api/me (Origin: 127.0.0.1:3050, cookie sid)
+    A--&gt;&gt;B: 200 { email, phone, balance } + ACAO: 127.0.0.1:3050 + Allow-Credentials: true
+    B--&gt;&gt;W: data shown ✓
+    W-&gt;&gt;B: POST /api/transfer JSON { to: Priya, amount: 100 }
+    B-&gt;&gt;A: OPTIONS /api/transfer (preflight)
+    A--&gt;&gt;B: 204 + Allow-Methods: GET, POST
+    B-&gt;&gt;A: POST /api/transfer (cookie sid)
+    A--&gt;&gt;B: 200 Sent ₹100 to Priya ✓
+    E-&gt;&gt;B: fetch /api/me with credentials include
+    B-&gt;&gt;A: GET /api/me (Origin: 127.0.0.1:3051, cookie sid)
+    A--&gt;&gt;B: 200 data, but NO CORS headers
+    B--&gt;&gt;E: Failed to fetch 🛡️ (data hidden)
+    E-&gt;&gt;B: fetch /vulnerable/reflect/me
+    B-&gt;&gt;A: GET (Origin: 127.0.0.1:3051, cookie sid)
+    A--&gt;&gt;B: 200 + ACAO: 127.0.0.1:3051 (reflected!) + Allow-Credentials: true
+    B--&gt;&gt;E: Rahul's email, phone, balance 😱
+    Note over E: POST /collect sends the loot to Vikram's own server
+    E-&gt;&gt;B: POST /vulnerable/reflect/transfer JSON { to: Vikram, amount: 1000 }
+    B-&gt;&gt;A: OPTIONS preflight
+    A--&gt;&gt;B: 204, reflected origin allowed
+    B-&gt;&gt;A: POST transfer (cookie sid)
+    A--&gt;&gt;B: 200 Sent ₹1000 to Vikram 😱
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: the frontend is on <b>another site</b>, so the cookie is <code>SameSite=None; Secure</code> and the API allow-lists its exact origin.</li>
+          <li>Steps 5–9: a JSON POST triggers a <b>preflight</b>. Only after it passes does the browser send the real POST.</li>
+          <li>Steps 10–13: the browser <b>does</b> send Rahul's cookie for Vikram's page, and the API <b>does</b> answer, but with no CORS headers the browser hides the data.</li>
+          <li>Steps 14–17: the reflecting endpoint hands Vikram's origin the permission, and his page posts the data to <b>his own</b> server.</li>
+          <li>Steps 18–22: with the preflight passing too, a CORS bug becomes a <b>money-moving</b> bug, not just a data leak.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="bugs">
+      <h2>3. Allow-list bugs</h2>
+      <p class="lead">The same attacker origin against different ways of writing the Origin check. Only one of them says no.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Refused</span>
+        <span class="chip"><i class="error"></i>Attacker allowed</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    O(["Vikram's Origin"]) --&gt; C1["Reflect: ACAO = request Origin"]
+    O --&gt; C2["Prefix: startsWith 'paisapay.in'"]
+    O --&gt; C3["Suffix: endsWith 'paisapay.in'"]
+    O --&gt; C4["Regex with an unescaped dot"]
+    O --&gt; C5["Origin null allowed"]
+    O --&gt; C6["Exact: ALLOWED_ORIGINS.has(origin)"]
+    C1 --&gt; R1[/"Any site gets in"/]
+    C2 --&gt; R2[/"paisapay.in.evil.com gets in"/]
+    C3 --&gt; R3[/"evilpaisapay.in gets in"/]
+    C4 --&gt; R4[/"appXpaisapay.in gets in"/]
+    C5 --&gt; R5[/"Any site, from a sandboxed iframe"/]
+    C6 --&gt; R6[/"Only the listed origins"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class R1,R2,R3,R4,R5 error
+    class R6 ok
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Every red result is a real-world bug pattern. The demo has <b>reflect</b>, <b>prefix</b> and <b>null</b> as routes you can try.</li>
+          <li>String tricks (prefix, suffix, <code>includes</code>, regex) all fail because an attacker can <b>register a domain</b> that matches.</li>
+          <li><code>null</code> sounds like "nobody", but any page can produce it with a sandboxed <code>&lt;iframe&gt;</code>.</li>
+          <li>The fix is boring on purpose: a <b>Set</b> of full origins (scheme + host + port) and <code>.has()</code>.</li>
+        </ol>
+        <p class="tip">Even a perfect allow-list trusts every page on those origins. An XSS on an allowed origin (topic 48) gets full access.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

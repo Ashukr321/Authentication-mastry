@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>56. OWASP Auth Cheat Sheets: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 56</div>
+    <h1>OWASP Auth Cheat Sheets: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">OWASP auth cheat sheets notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#map">3. Cheat sheets and topics</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">One login request on the safe app, and the cheat-sheet rule that guards each step. The red boxes are what the legacy app does instead.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Cheat sheet followed</span>
+        <span class="chip"><i class="error"></i>Legacy app: rule broken</span>
+        <span class="chip"><i class="trap"></i>Careful: easy to get subtly wrong</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["POST /login&lt;br/&gt;email + password"]) --&gt; H["Headers on every response:&lt;br/&gt;no-store, nosniff, frame-ancestors&lt;br/&gt;(HTTP Headers CS)"]
+    H --&gt; C{"Cross-site request?&lt;br/&gt;(CSRF CS)"}
+    C -- "Yes" --&gt; C1[/"403 refused"/]
+    C -- "No" --&gt; R{"5+ failures for this email&lt;br/&gt;in 15 min? (Authentication CS)"}
+    R -- "Yes" --&gt; R1[/"429 + Retry-After"/]
+    R -- "No" --&gt; V["scrypt verify, dummy hash&lt;br/&gt;for unknown emails&lt;br/&gt;(Password Storage CS)"]
+    V --&gt; OK{"Password right?"}
+    OK -- "No" --&gt; G[/"401 Wrong email or password&lt;br/&gt;(same for unknown email)"/]
+    OK -- "Yes" --&gt; S["Delete the guest session,&lt;br/&gt;issue a NEW 256-bit id&lt;br/&gt;(Session Management CS)"]
+    S --&gt; K[/"Set-Cookie sid (HttpOnly, SameSite=Lax)&lt;br/&gt;+ Secure in production"/]
+    G -.-&gt; T["Unknown emails count as&lt;br/&gt;failures too"]
+    R -. "legacy" .-&gt; X1[/"No limit: guess forever"/]
+    G -. "legacy" .-&gt; X2[/"404 No account vs 401 Wrong password"/]
+    V -. "legacy" .-&gt; X3[/"Unsalted MD5"/]
+    S -. "legacy" .-&gt; X4[/"Same id sess-1001&lt;br/&gt;before and after login"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class X1,X2,X3,X4 error
+    class C1,R1,G,K ok
+    class T trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Follow the <b>solid arrows</b> top to bottom: that's the safe app. Each box names the cheat sheet (CS) behind it.</li>
+          <li>The <b>dotted arrows</b> to red boxes show what the legacy app does at the same step.</li>
+          <li>The rate limit runs <b>before</b> the expensive hash, so a flood of guesses doesn't burn 128 MiB each.</li>
+          <li>The yellow box is the subtle part: if only real accounts got a 429, the rate limiter itself would reveal who has an account.</li>
+          <li>The success path ends with a <b>brand-new</b> session id. Reusing the guest id is session fixation (topic 50).</li>
+        </ol>
+        <p class="tip">The auditor checks every box here over real HTTP: run <code>/audit/safe</code> and <code>/audit/legacy</code>.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Part of <code>GET /audit/legacy</code>: the auditor probes the legacy app like an attacker would. Real responses from our test run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor P as Priya
+    participant A as Auditor (safe app, :3056)
+    participant L as Legacy app (:3057)
+
+    P-&gt;&gt;A: GET /audit/legacy
+    A-&gt;&gt;L: POST /signup { audit-873a5230, "Tiffin-2026x" }
+    L--&gt;&gt;A: 201 Account created
+    A-&gt;&gt;L: POST /signup (same email again)
+    L--&gt;&gt;A: 409 Email already registered ❌ enumeration
+    Note over A: white-box: stored hash is 065e7493… (MD5) ❌
+    A-&gt;&gt;L: POST /login (unknown email)
+    L--&gt;&gt;A: 404 No account for that email
+    A-&gt;&gt;L: POST /login (wrong password)
+    L--&gt;&gt;A: 401 Wrong password ❌ different answers
+    A-&gt;&gt;L: GET / (guest)
+    L--&gt;&gt;A: Set-Cookie connect.sid=sess-1001 (no flags) ❌
+    A-&gt;&gt;L: POST /login (Cookie sess-1001)
+    L--&gt;&gt;A: 200, no new cookie: still sess-1001 ❌ fixation
+    A-&gt;&gt;L: POST /transfer ₹5000 (Origin: evil.example)
+    L--&gt;&gt;A: 200 Sent ₹5000 to vikram ❌ CSRF
+    A-&gt;&gt;L: POST /logout, then GET /me with the old cookie
+    L--&gt;&gt;A: 200 balance ₹12,500 ❌ session still alive
+    A-&gt;&gt;L: POST /login x10 with wrong passwords
+    L--&gt;&gt;A: 401, 401, 401 … never 429 ❌
+    A--&gt;&gt;P: text report: Score 0/16
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 2–5: signing up twice shows whether "this email has an account" leaks.</li>
+          <li>The note after step 5 is the one <b>white-box</b> check: the auditor reads how the password was stored. Everything else is black-box HTTP.</li>
+          <li>Steps 6–9: unknown email vs wrong password must look identical.</li>
+          <li>Steps 10–13: the guest id must change at login. Here it doesn't.</li>
+          <li>Steps 14–17: a cross-site transfer and a reused cookie after logout both work. Two serious bugs.</li>
+          <li>The brute-force check runs <b>last</b>, because on a safe app it locks the test account.</li>
+        </ol>
+        <p class="tip">The same run against the safe app ends with "Score: 16/16" (README, step ②).</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="map">
+      <h2>3. Cheat sheets and topics</h2>
+      <p class="lead">The OWASP documents on the left, the cheat sheets for auth in the middle, and the topics in this course that implement them on the right.</p>
+      <div class="legend">
+        <span class="chip"><i class="trap"></i>OWASP document</span>
+        <span class="chip"><i class="ok"></i>Our topics</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    TOP["Top 10&lt;br/&gt;what goes wrong"] --&gt; CS
+    ASVS["ASVS L1 / L2 / L3&lt;br/&gt;testable requirements"] --&gt; CS
+    WSTG["WSTG&lt;br/&gt;how to test"] --&gt; CS
+    CS(("Cheat Sheet&lt;br/&gt;Series"))
+    CS --&gt; AU["Authentication"] --&gt; T1["06 signup, 07 login,&lt;br/&gt;16 lockout, 51 enumeration"]
+    CS --&gt; PS["Password Storage"] --&gt; T2["03 hashing,&lt;br/&gt;04 bcrypt / Argon2"]
+    CS --&gt; SM["Session Management"] --&gt; T3["09 sessions, 10 cookie flags,&lt;br/&gt;11 logout, 50 fixation"]
+    CS --&gt; FP["Forgot Password"] --&gt; T4["13 reset password"]
+    CS --&gt; MF["MFA, Credential Stuffing"] --&gt; T5["43-46 OTP, TOTP, passkeys,&lt;br/&gt;52 credential stuffing"]
+    CS --&gt; WB["CSRF, XSS, CSP, HTTP Headers"] --&gt; T6["02 headers, 47 CSRF,&lt;br/&gt;48 XSS"]
+    CS --&gt; TK["JWT, OAuth 2.0, SAML"] --&gt; T7["18-27 JWT, 33-41 OAuth,&lt;br/&gt;53 JWT attacks"]
+    CS --&gt; OP["Secrets, Logging, Errors"] --&gt; T8["54 key rotation,&lt;br/&gt;55 audit logs"]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class TOP,ASVS,WSTG trap
+    class T1,T2,T3,T4,T5,T6,T7,T8 ok
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>Top 10</b> tells you which risks matter, <b>ASVS</b> turns them into requirements, <b>WSTG</b> says how to test them. All three point to the cheat sheets for the "how to build it" part.</li>
+          <li>Each cheat sheet in the middle is a short page you open <b>while building</b> that feature.</li>
+          <li>The green boxes are where this course implements those rules, with a working <code>server.js</code>.</li>
+          <li>This topic's auditor checks rules from the first four rows plus headers, CSRF and error handling.</li>
+        </ol>
+        <p class="tip">You don't need to memorise the cheat sheets. Know which one exists for the feature in front of you, and open it.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

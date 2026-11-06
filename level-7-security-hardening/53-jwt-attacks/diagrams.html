@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>53. JWT Attacks: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 53</div>
+    <h1>JWT Attacks: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">JWT attacks notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#crack">3. Weak secret</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">Every decision a verifier makes about an incoming JWT. At each red box, one of the attacks wins. The safe verifier takes the green path every time.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Safe choice / rejected</span>
+        <span class="chip"><i class="error"></i>Attacker wins</span>
+        <span class="chip"><i class="trap"></i>Careful: attacker-controlled input</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Bearer token arrives&lt;br/&gt;header.payload.signature"]) --&gt; H["Read the header:&lt;br/&gt;alg, kid, jku, jwk"]
+    H --&gt; N{"header alg is none?"}
+    N -- "Vulnerable: return payload" --&gt; E1[/"Attack 1: alg none&lt;br/&gt;no signature, admin"/]
+    N -- "Safe: never asked" --&gt; K{"Where does the key&lt;br/&gt;come from?"}
+    K -- "jku URL or jwk in header" --&gt; E4[/"Attack 4: attacker's own key&lt;br/&gt;(and SSRF)"/]
+    K -- "kid used as a file path" --&gt; E3[/"Attack 3: kid = ../package.json&lt;br/&gt;a key he can read"/]
+    K -- "Safe: kid looked up in OUR map" --&gt; M{"kid in the map?"}
+    M -- No --&gt; R1[/"401 unknown kid"/]
+    M -- Yes --&gt; G{"Who picks the algorithm?"}
+    G -- "Vulnerable: header alg" --&gt; E2[/"Attack 2: HS256 signed with&lt;br/&gt;our PUBLIC key"/]
+    G -- "Safe: the key's own alg (pinned)" --&gt; S{"Signature valid?"}
+    S -- No --&gt; R2[/"401 invalid signature / algorithm"/]
+    S -- Yes --&gt; C{"exp, iss, aud OK?"}
+    C -- "Vulnerable: never checked" --&gt; E6[/"Expired or foreign token works"/]
+    C -- No --&gt; R3[/"401 expired / wrong audience"/]
+    C -- Yes --&gt; OK[/"Trust the payload"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,E4,E6 error
+    class R1,R2,R3,OK ok
+    class H trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The <b>header</b> (yellow) was written by whoever made the token. Every attack starts by editing it.</li>
+          <li>The vulnerable verifier asks the header three questions: <b>is it signed?</b> (<code>alg</code>), <b>which key?</b> (<code>kid</code>, <code>jku</code>), <b>which algorithm?</b> (<code>alg</code>). Each answer is a way in.</li>
+          <li>The safe verifier asks only one thing: <b>which of OUR keys</b> (<code>kid</code> in a fixed map). Key and algorithm come from that map.</li>
+          <li>Even a good signature isn't enough: <code>exp</code>, <code>iss</code> and <code>aud</code> must be checked too (topic 27).</li>
+        </ol>
+        <p class="tip">Attack 5 (weak secret) isn't on this chart: there the verifier is correct, and the attacker simply knows the secret. See diagram 3.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Algorithm confusion, with the real headers from the demo. The same forged token goes to both verifiers.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram (normal user)
+    participant E as Vikram's server (127.0.0.1:3154)
+    participant A as ChaiCart API (localhost:3153)
+
+    V-&gt;&gt;A: POST /login (Vikram's own account)
+    A--&gt;&gt;V: 200 token: header alg RS256, kid rs-1 / payload role user
+    V-&gt;&gt;A: GET /admin (Bearer his real token)
+    A--&gt;&gt;V: 403 Admins only
+    V-&gt;&gt;E: POST /forge/confusion { token, claims: { role: admin } }
+    E-&gt;&gt;A: GET /.well-known/jwks.json
+    A--&gt;&gt;E: { keys: [ RSA public key, kid rs-1 ] } (public on purpose)
+    Note over E: header becomes alg HS256, kid rs-1 / payload role admin
+    Note over E: signature = HMAC-SHA256(public key PEM, header.payload)
+    E--&gt;&gt;V: forged token
+    V-&gt;&gt;A: GET /vulnerable/admin (Bearer forged)
+    Note over A: header says HS256, so HMAC with PUBLIC_KEY: it matches
+    A--&gt;&gt;V: 200 Welcome to the admin panel 😱
+    V-&gt;&gt;A: GET /admin (Bearer forged)
+    Note over A: kid rs-1 means RS256 only (pinned)
+    A--&gt;&gt;V: 401 Invalid token (log: invalid algorithm) ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–4: Vikram is a real user with a real token. He just isn't an admin.</li>
+          <li>Steps 6–7: he downloads our public key. Nothing was stolen: JWKS is meant to be public.</li>
+          <li>Notes after step 7: he changes <code>alg</code> to <code>HS256</code> and uses the public key text as an <b>HMAC secret</b>.</li>
+          <li>Steps 11–13: the vulnerable verifier lets the header pick HMAC, computes it with the same public key, and gets the same answer.</li>
+          <li>Steps 14–16: the safe verifier knows <code>rs-1</code> is an <b>RS256</b> key and refuses any other algorithm.</li>
+        </ol>
+        <p class="tip">Swap <code>confusion</code> for <code>none</code>, <code>kid</code> or <code>jku</code> in step 5 and the shape is the same: vulnerable says 200, safe says 401.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="crack">
+      <h2>3. Weak secret: the attack that needs no bug</h2>
+      <p class="lead">The legacy API verifies HS256 correctly. The secret is just guessable, and guessing happens on the attacker's own machine.</p>
+      <div class="legend">
+        <span class="chip"><i class="error"></i>Attacker wins</span>
+        <span class="chip"><i class="ok"></i>Safe</span>
+      </div>
+      <div class="layout wide">
+      <div class="pair">
+        <div class="diagram"><h3>❌ Human secret: chaicart123</h3><pre class="mermaid">
+flowchart TD
+    T(["One real HS256 token&lt;br/&gt;from /legacy/login"]) --&gt; L["On his laptop, for each word:&lt;br/&gt;HMAC(word, header.payload)"]
+    L --&gt; Q{"Equals the&lt;br/&gt;signature?"}
+    Q -- "No: next word" --&gt; L
+    Q -- "Yes: chaicart123" --&gt; F["Sign role admin&lt;br/&gt;with the cracked secret"]
+    F --&gt; W[/"GET /legacy/admin: 200&lt;br/&gt;works until the secret changes"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class W error
+    class L trap
+</pre></div>
+        <div class="diagram"><h3>✅ Random secret, or no shared secret</h3><pre class="mermaid">
+flowchart TD
+    S1(["Secret = randomBytes(32)"]) --&gt; G1["2 to the power 256 possible secrets"]
+    G1 --&gt; X1[/"Wordlist: not cracked&lt;br/&gt;(our self-check proves it)"/]
+    S2(["Or RS256 / ES256"]) --&gt; G2["No shared secret exists:&lt;br/&gt;only the auth server has the private key"]
+    G2 --&gt; X2[/"Nothing to guess"/]
+
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class X1,X2 ok
+</pre></div>
+      </div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The loop (yellow) runs <b>offline</b>. Your server never sees a single guess, so rate limits, lockouts and alerts can't help.</li>
+          <li><code>hashcat</code> runs billions of these HMACs per second on a GPU. A human-chosen secret falls in seconds.</li>
+          <li>Right side: 32 random bytes can't be guessed, and asymmetric algorithms have no shared secret at all.</li>
+        </ol>
+        <p class="tip">A cracked or leaked secret means every token signed with it is suspect. Rotate it (topic 54).</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>

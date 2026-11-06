@@ -1,0 +1,10 @@
+{
+  "name": "55-audit-logs-login-alerts",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
