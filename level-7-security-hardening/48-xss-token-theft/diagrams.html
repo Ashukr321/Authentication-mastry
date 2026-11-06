@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>48. XSS &amp; Token Theft: Diagrams</title>
+  <link rel="stylesheet" href="../../resources/diagrams.css">
+</head>
+<body>
+  <header>
+    <div class="topic">LEVEL 7 · TOPIC 48</div>
+    <h1>XSS &amp; Token Theft: Diagrams</h1>
+    <p>The visual guide for the <a href="README.md">XSS &amp; token theft notes</a></p>
+  </header>
+
+  <nav>
+    <a href="#flow">1. Flow diagram</a>
+    <a href="#data">2. Data flow</a>
+    <a href="#types">3. The three kinds of XSS</a>
+  </nav>
+
+  <main>
+    <section id="flow">
+      <h2>1. Flow diagram</h2>
+      <p class="lead">From "Vikram typed something" to "his script runs as KhaanaReview", and every place it can be stopped. Each layer is a separate chance to win.</p>
+      <div class="legend">
+        <span class="chip"><i class="ok"></i>Stopped / damage limited</span>
+        <span class="chip"><i class="error"></i>Attacker wins</span>
+        <span class="chip"><i class="trap"></i>Careful: saved as typed, on purpose</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart TD
+    A(["Vikram posts a review:&lt;br/&gt;Great food! #lt;script src=x.js#gt;"]) --&gt; B["Saved exactly as typed&lt;br/&gt;(escape on OUTPUT, not input)"]
+    B --&gt; C{"Page escapes it&lt;br/&gt;for its context?"}
+    C -- "Yes: /reviews" --&gt; OK1[/"Shown as text:&lt;br/&gt;#lt;script#gt; on screen"/]
+    C -- "No: a bug" --&gt; D{"CSP with a nonce&lt;br/&gt;on this page?"}
+    D -- "Yes: /csp-demo/reviews" --&gt; OK2[/"Browser refuses the script:&lt;br/&gt;no nonce"/]
+    D -- "No: /vulnerable/reviews" --&gt; R["x.js runs as KhaanaReview&lt;br/&gt;in Rahul's browser"]
+    R --&gt; L{"Token in&lt;br/&gt;localStorage?"}
+    L -- Yes --&gt; E1[/"Token sent to Vikram:&lt;br/&gt;works from his laptop"/]
+    L -- "No: HttpOnly cookie only" --&gt; OK3[/"document.cookie is empty:&lt;br/&gt;nothing to carry away"/]
+    R --&gt; E2[/"Acts as Rahul while the tab is open:&lt;br/&gt;posts a review (cookie attached)"/]
+    E1 --&gt; V{"Rahul logs out:&lt;br/&gt;server revokes tokens?"}
+    V -- Yes --&gt; OK4[/"Stolen token: 401"/]
+    V -- "No: cookie deleted in browser only" --&gt; E3[/"Stolen token keeps working"/]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef trap fill:#fef9c3,stroke:#ca8a04,color:#713f12
+    class E1,E2,E3,R error
+    class OK1,OK2,OK3,OK4 ok
+    class B trap
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>The review is <b>saved as typed</b> (yellow). That's correct: the escaping depends on where it's shown later.</li>
+          <li><b>Escaping</b> is the real fix: the script becomes visible text.</li>
+          <li>If someone forgets to escape, a <b>nonce-based CSP</b> still stops the browser from running it.</li>
+          <li>Only with <b>both</b> layers missing does the script run. Then <code>HttpOnly</code> decides what it can <b>take away</b>, but not what it can <b>do</b> while the tab is open.</li>
+          <li><b>Server-side revocation</b> on logout is the last chance to kill a stolen token.</li>
+        </ol>
+        <p class="tip">Every red box was reproduced in the demo's browser test. Every green box too.</p>
+      </aside>
+      </div>
+    </section>
+
+    <section id="data">
+      <h2>2. Data flow</h2>
+      <p class="lead">Stored XSS on <code>/vulnerable/reviews</code>, with the real values from our test run.</p>
+      <div class="layout wide">
+        <div class="diagram"><pre class="mermaid">
+sequenceDiagram
+    autonumber
+    actor V as Vikram
+    participant K as KhaanaReview (localhost:3048)
+    participant B as Rahul's browser
+    participant X as Vikram's server (127.0.0.1:3049)
+
+    V-&gt;&gt;K: POST /reviews { text: "Great food! #lt;script src=x.js#gt;" }
+    K--&gt;&gt;V: 201 saved as typed
+    B-&gt;&gt;K: POST /login (Rahul)
+    K--&gt;&gt;B: Set-Cookie: sid (HttpOnly) + { apiToken: "Ew0oYhoq…" }
+    Note over B: page stores apiToken in localStorage (the bad habit)
+    B-&gt;&gt;K: GET /vulnerable/reviews
+    K--&gt;&gt;B: HTML with the raw #lt;script src=...x.js#gt; (no CSP header)
+    B-&gt;&gt;X: GET /x.js
+    X--&gt;&gt;B: the attacker's script
+    Note over B: runs as KhaanaReview: document.cookie = "" (HttpOnly) but localStorage has the token
+    B-&gt;&gt;X: GET /collect?d={ apiToken: "Ew0oYhoq…", documentCookie: "" } (an img request)
+    B-&gt;&gt;K: POST /reviews "Vikram's Biryani House is the best!" (cookie sid attached)
+    K--&gt;&gt;B: 201 review saved as Rahul 😱
+    V-&gt;&gt;K: GET /api/me (Authorization: Bearer Ew0oYhoq…)
+    K--&gt;&gt;V: 200 { email: Rahul's, via: "Bearer token" } 😱
+    B-&gt;&gt;K: POST /logout (Rahul)
+    Note over K: delete session AND all of Rahul's API tokens
+    V-&gt;&gt;K: GET /api/me (Bearer Ew0oYhoq…)
+    K--&gt;&gt;V: 401 Not signed in ✓
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li>Each <b>column</b> is one party. <b>Solid arrows</b> are requests, <b>dashed arrows</b> are replies.</li>
+          <li>Steps 1–2: the payload sits harmlessly in the database until someone renders it raw.</li>
+          <li>Step 4: two credentials. The <code>sid</code> cookie is <code>HttpOnly</code>; the <code>apiToken</code> goes to JavaScript.</li>
+          <li>Steps 5–8: no escaping and no CSP, so the browser fetches and runs Vikram's script <b>with KhaanaReview's authority</b>.</li>
+          <li>Step 9: an image request carries the loot out. No CORS is needed to <b>send</b>.</li>
+          <li>Step 10: the script can't read <code>sid</code>, but the browser attaches it anyway: <b>HttpOnly limits theft, not actions</b>.</li>
+          <li>Steps 12–16: the stolen token works from anywhere, until the server <b>revokes</b> it.</li>
+        </ol>
+      </aside>
+      </div>
+    </section>
+
+    <section id="types">
+      <h2>3. The three kinds of XSS</h2>
+      <p class="lead">Different roads, same destination: the attacker's code running as your site. The fix for each is on the right.</p>
+      <div class="legend">
+        <span class="chip"><i class="error"></i>Script runs</span>
+        <span class="chip"><i class="ok"></i>The fix</span>
+      </div>
+      <div class="layout">
+        <div class="diagram"><pre class="mermaid">
+flowchart LR
+    S1(["Stored: review with a script"]) --&gt; S2["Saved in the database"]
+    S2 --&gt; S3["Server builds every visitor's page with it"]
+    R1(["Reflected: link to /search?q=#lt;img onerror#gt;"]) --&gt; R2["Victim clicks the link"]
+    R2 --&gt; R3["Server echoes q into the page"]
+    D1(["DOM: link to /welcome with #lt;img onerror#gt; after the hash"]) --&gt; D2["Victim clicks the link"]
+    D2 --&gt; D3["Page's own JS: el.innerHTML = location.hash"]
+    S3 --&gt; RUN[/"Script runs as your site"/]
+    R3 --&gt; RUN
+    D3 --&gt; RUN
+    S3 -. fix .-&gt; F1["Escape on output + CSP"]
+    R3 -. fix .-&gt; F1
+    D3 -. fix .-&gt; F2["textContent, or DOMPurify + CSP"]
+
+    classDef error fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef ok fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class RUN error
+    class F1,F2 ok
+</pre></div>
+      <aside>
+        <h3>How to read it</h3>
+        <ol>
+          <li><b>Stored</b> hits <b>everyone</b> who opens the page, with no click needed. The most dangerous kind.</li>
+          <li><b>Reflected</b> needs the victim to open a crafted link (email, chat). The server copies the request into the response.</li>
+          <li><b>DOM-based</b> is a <b>frontend</b> bug: the server sends the same safe page every time, and the page's own JavaScript puts URL data into <code>innerHTML</code>. Data after the hash never even reaches the server.</li>
+          <li>The first two are fixed on the <b>server</b> (escaping); the third in the <b>browser code</b> (<code>textContent</code>). CSP backs up all three.</li>
+        </ol>
+        <p class="tip">Also in the demo: a <code>javascript:</code> link in the "website" field. Escaping doesn't stop it; only an <code>http(s)</code> allow-list does.</p>
+      </aside>
+      </div>
+    </section>
+
+    <footer>Diagrams are drawn with <a href="https://mermaid.js.org">Mermaid</a>, which loads from the internet the first time you open this page.</footer>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <script src="../../resources/diagrams.js"></script>
+</body>
+</html>
