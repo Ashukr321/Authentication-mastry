@@ -281,3 +281,45 @@ a {
     border-radius: 0 0 12px 12px;
     max-height: 640px;
 }
+
+/* ---------- Command palette (cmdk / Radix dialog sets data-state) ---------- */
+@keyframes cmdk-fade-in {
+    from {
+        opacity: 0;
+    }
+}
+@keyframes cmdk-fade-out {
+    to {
+        opacity: 0;
+    }
+}
+@keyframes cmdk-pop-in {
+    from {
+        opacity: 0;
+        transform: translateY(-8px) scale(0.96);
+    }
+}
+@keyframes cmdk-pop-out {
+    to {
+        opacity: 0;
+        transform: translateY(-8px) scale(0.96);
+    }
+}
+.cmdk-overlay[data-state="open"] {
+    animation: cmdk-fade-in 0.2s ease-out;
+}
+.cmdk-overlay[data-state="closed"] {
+    animation: cmdk-fade-out 0.15s ease-in;
+}
+.cmdk-content[data-state="open"] {
+    animation: cmdk-pop-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cmdk-content[data-state="closed"] {
+    animation: cmdk-pop-out 0.15s ease-in;
+}
+@media (prefers-reduced-motion: reduce) {
+    .cmdk-overlay,
+    .cmdk-content {
+        animation: none !important;
+    }
+}
